@@ -1,0 +1,105 @@
+name: Sathya Reviews — Scrape Every 3 Hours
+
+on:
+  schedule:
+    #  UTC time  →  IST (UTC+5:30)
+    - cron: '30 0 * * *'    #  06:00 IST
+    - cron: '30 3 * * *'    #  09:00 IST
+    - cron: '30 6 * * *'    #  12:00 IST
+    - cron: '30 9 * * *'    #  15:00 IST
+    - cron: '30 12 * * *'   #  18:00 IST
+    - cron: '30 15 * * *'   #  21:00 IST
+    - cron: '30 18 * * *'   #  00:00 IST
+    - cron: '30 21 * * *'   #  03:00 IST
+
+  # Lets you click "Run workflow" manually from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  scrape-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50       # full run of 36 branches ≈ 25–35 min
+
+    permissions:
+      contents: write         # needed so the job can git push
+
+    steps:
+
+      # ── 1. Checkout with full history (needed for git push) ─────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1      # shallow clone is fine, we only need HEAD
+
+      # ── 2. Python ───────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      # ── 3. System deps for Chrome/SeleniumBase ──────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 \
+            libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libasound2 \
+            libpango-1.0-0 libpangocairo-1.0-0 fonts-liberation \
+            --no-install-recommends
+
+      # ── 4. Python deps ──────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install seleniumbase
+
+      # ── 5. Download Chrome via SeleniumBase (UC mode) ───────────────
+      - name: Download UC Chrome
+        run: |
+          python -c "from seleniumbase import SB; print('SeleniumBase OK')"
+          seleniumbase get chromedriver --version=latest || true
+
+      # ── 6. Run the scraper ──────────────────────────────────────────
+      - name: Run scraper
+        run: python scraper.py
+
+      # ── 7. Commit the updated JSON files back to the repo ───────────
+      #
+      # KEY TRICK: We commit with --amend + force-push so git history
+      # doesn't balloon with hundreds of JSON commits over months.
+      # Only ONE commit ("data: latest scrape") ever exists for the data.
+      # This keeps the repo forever lean — storage never grows unboundedly.
+      #
+      - name: Commit and push updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add docs/rev.json docs/deleted.json
+
+          # Only commit if something actually changed
+          if git diff --cached --quiet; then
+            echo "No changes to commit — no new/deleted reviews this run."
+            exit 0
+          fi
+
+          NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+          # Count new reviews added in this run (simple grep count)
+          LIVE=$(python -c "import json; d=json.load(open('docs/rev.json')); print(len(d))")
+          DEL=$(python -c "import json; d=json.load(open('docs/deleted.json')); print(len(d))")
+
+          git commit -m "data: ${NOW} | live=${LIVE} deleted=${DEL}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 8. On failure: save logs ────────────────────────────────────
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-failure-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
