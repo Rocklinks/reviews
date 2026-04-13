@@ -1,6 +1,10 @@
 """
-Sathya Reviews Scraper v2.1 — with Proper Date Parsing
-Optimized for GitHub Actions + UC Mode + Chrome
+Sathya Reviews Scraper v2.3
+- Newest sort
+- Only reviews < 23 hours old
+- Proper deduplication via fingerprint
+- Deleted & reinstated reviews logic
+- Optimized for tri-hourly GitHub Actions runs
 """
 
 import json
@@ -24,12 +28,12 @@ REV_JSON = REPO_ROOT / "docs" / "rev.json"
 DEL_JSON = REPO_ROOT / "docs" / "deleted.json"
 
 # ── Tuning ─────────────────────────────────────────────────────────────────────
-SCROLL_COUNT = 5
-SCROLL_PAUSE = 0.9
+SCROLL_COUNT = 8
+SCROLL_PAUSE = 1.0
 BRANCH_PAUSE = (3, 5)
 MAX_RETRIES = 2
 
-# ── 36 Branches ────────────────────────────────────────────────────────────────
+# ── Branches ───────────────────────────────────────────────────────────────────
 BRANCHES = [
     {"id":1,  "name":"Tuticorin-1",       "place_id":"ChIJ5zJNoJfvAzsR-bJE_3bbNYw", "agm":"Siva"},
     {"id":2,  "name":"Tuticorin-2",       "place_id":"ChIJH6gY4-PvAzsRJ50skTlx3cs", "agm":"Siva"},
@@ -69,7 +73,7 @@ BRANCHES = [
     {"id":36, "name":"Sivakasi",          "place_id":"ChIJI2JvEePOBjsREh8b-x4WF4U", "agm":"Venkatesh"},
 ]
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helper Functions ───────────────────────────────────────────────────────────
 
 def place_id_to_url(place_id: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query=Google&query_place_id={place_id}"
@@ -84,16 +88,35 @@ def ist_now() -> datetime:
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 
+def is_review_within_23_hours(relative_time: str) -> bool:
+    """Return True only if review is less than ~23 hours old"""
+    if not relative_time:
+        return False
+    text = relative_time.lower().strip()
+
+    # Accept anything mentioning "hour" or "just now"
+    if any(word in text for word in ["just now", "minute", "moments", "hour"]):
+        return True
+
+    # Reject "a day ago", "days ago", "week", "month", "year"
+    if any(word in text for word in ["day ago", "days ago", "week", "month", "year"]):
+        return False
+
+    # Numeric hour check
+    match = re.search(r'(\d+)\s*hour', text)
+    if match:
+        return int(match.group(1)) < 23
+
+    return False
+
+
 def parse_relative_time(relative_str: str, reference_date: datetime = None) -> str | None:
-    """Convert '2 hours ago', '3 days ago', 'a month ago', etc. into fixed ISO datetime"""
-    if not relative_str:
-        return None
-    if reference_date is None:
+    if not relative_str or reference_date is None:
         reference_date = ist_now()
 
     text = relative_str.lower().strip()
 
-    if any(word in text for word in ["just now", "minute", "moments", "now"]):
+    if any(word in text for word in ["just now", "minute", "moments"]):
         return reference_date.strftime("%Y-%m-%d %H:%M:%S")
     if "yesterday" in text:
         return (reference_date - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -114,7 +137,7 @@ def parse_relative_time(relative_str: str, reference_date: datetime = None) -> s
             real_date = reference_date - delta
             return real_date.strftime("%Y-%m-%d %H:%M:%S")
 
-    return reference_date.strftime("%Y-%m-%d %H:%M:%S")  # fallback
+    return reference_date.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def load_json(path: Path) -> list:
@@ -122,7 +145,7 @@ def load_json(path: Path) -> list:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"  [WARN] {path.name} unreadable: {e}")
+            print(f"  [WARN] Failed to load {path.name}: {e}")
     return []
 
 
@@ -131,7 +154,7 @@ def save_json(path: Path, data: list):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# ── Scrape One Branch ──────────────────────────────────────────────────────────
+# ── Scrape Single Branch ───────────────────────────────────────────────────────
 
 def scrape_branch(sb, branch: dict, now: datetime) -> list:
     bid = branch["id"]
@@ -139,20 +162,32 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
     snap_date = now.strftime("%Y-%m-%d")
     snap_time = now.strftime("%H:%M IST")
 
+    print(f"  [{bid:02d}/36] {name:<24}", end="  ", flush=True)
+
     sb.open(place_id_to_url(branch["place_id"]))
     time.sleep(random.uniform(3.0, 4.5))
 
     # Click Reviews tab
     for sel in ['button[aria-label*="Reviews"]', 'button[aria-label*="reviews"]', '[role="tab"]:nth-child(2)']:
         try:
-            if sb.is_element_visible(sel, timeout=3):
+            if sb.is_element_visible(sel, timeout=4):
                 sb.click(sel)
-                time.sleep(2.5)
+                time.sleep(2.8)
                 break
         except:
             pass
 
-    # Scroll
+    # Sort by Newest
+    try:
+        sb.click('button[aria-label*="Sort"]', timeout=3)
+        time.sleep(1.5)
+        sb.click('span:contains("Newest")', timeout=2)
+        time.sleep(2.5)
+        print("(Newest)", end=" ")
+    except:
+        print("(Default)", end=" ")
+
+    # Scroll to load recent reviews
     for _ in range(SCROLL_COUNT):
         sb.execute_script("""
             var c = document.querySelector('.m6QErb[tabindex]') || document.querySelector('div[role="feed"]');
@@ -160,7 +195,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
         """)
         time.sleep(SCROLL_PAUSE)
 
-    # Extract
+    # Extract reviews
     raw = sb.execute_script("""
         (function() {
             var sels = ['.jftiEf', 'div[data-review-id]', '.GHT2ce'];
@@ -187,8 +222,12 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
 
     seen, out = set(), []
     for r in raw:
+        if not is_review_within_23_hours(r.get("time", "")):
+            continue
+
         fp = make_fingerprint(bid, r["author"], r["text"], r["rating"])
-        if fp in seen: continue
+        if fp in seen:
+            continue
         seen.add(fp)
 
         out.append({
@@ -199,12 +238,14 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
             "author": r["author"],
             "rating": r["rating"],
             "text": r["text"],
-            "time": r["time"],                    # original relative string
-            "parsed_date": parse_relative_time(r["time"], now),  # ← Fixed real date
+            "time": r["time"],
+            "parsed_date": parse_relative_time(r["time"], now),
             "snap_date": snap_date,
             "snap_time": snap_time,
             "first_seen": f"{snap_date} {snap_time}",
         })
+
+    print(f"✓  {len(out):2d} new/recent reviews")
     return out
 
 
@@ -214,62 +255,57 @@ def run():
     now = ist_now()
     run_label = now.strftime("%Y-%m-%d %H:%M IST")
 
-    print("=" * 72)
-    print(f"  Sathya Reviews Scraper v2.1 — {run_label}")
-    print("=" * 72)
+    print("=" * 78)
+    print(f"  Sathya Reviews Scraper v2.3 — Newest + 23h Filter — {run_label}")
+    print("=" * 78)
 
-    print("\n[1/4] Loading previous data...")
+    # Load existing data
+    print("\n[1/4] Loading existing data...")
     prev_live = load_json(REV_JSON)
     prev_deleted = load_json(DEL_JSON)
     live_map = {r["fingerprint"]: r for r in prev_live if "fingerprint" in r}
     del_map = {r["fingerprint"]: r for r in prev_deleted if "fingerprint" in r}
-    print(f"  {len(live_map)} live | {len(del_map)} deleted")
+    print(f"  Live: {len(live_map)} | Deleted: {len(del_map)}")
 
+    # Scrape all branches
     print(f"\n[2/4] Scraping {len(BRANCHES)} branches...")
     t0 = time.time()
     all_reviews = []
     ok_bids = set()
-    fail_bids = set()
 
-    with SB(uc=True, xvfb=True) as sb:   # Best for UC mode on GitHub
+    with SB(uc=True, xvfb=True) as sb:
         sb.open("https://www.google.com/maps")
         time.sleep(random.uniform(2.0, 3.0))
-        print("  [warm-up] ✓")
+        print("  [warm-up] ✓\n")
 
         for branch in BRANCHES:
-            bid, name = branch["id"], branch["name"]
-            print(f"  [{bid:02d}/36] {name:<24}", end="  ", flush=True)
-
-            reviews = []
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     reviews = scrape_branch(sb, branch, now)
+                    all_reviews.extend(reviews)
+                    ok_bids.add(branch["id"])
                     break
                 except Exception as e:
                     if attempt == MAX_RETRIES:
-                        print("✗")
-                        fail_bids.add(bid)
+                        print(f"  [{branch['id']:02d}] Failed after {MAX_RETRIES} attempts")
                     else:
-                        print("↺ ", end="", flush=True)
                         time.sleep(random.uniform(5, 9))
-
-            if reviews:
-                all_reviews.extend(reviews)
-                ok_bids.add(bid)
-                print(f"✓  {len(reviews):3d} reviews")
 
             time.sleep(random.uniform(*BRANCH_PAUSE))
 
     elapsed = int(time.time() - t0)
-    print(f"\n  Scraped {len(all_reviews)} reviews in {elapsed//60}m {elapsed%60}s")
+    print(f"\n  Total reviews scraped this run: {len(all_reviews)}")
+    print(f"  Time taken: {elapsed//60}m {elapsed%60}s\n")
 
-    # Diff logic (unchanged)
-    print("\n[3/4] Calculating changes...")
+    # Calculate changes (New / Reinstated / Deleted)
+    print("[3/4] Calculating changes...")
     curr_map = {r["fingerprint"]: r for r in all_reviews}
 
-    new_reviews = [r for fp, r in curr_map.items() if fp not in live_map and fp not in del_map]
+    new_reviews = [r for fp, r in curr_map.items() 
+                   if fp not in live_map and fp not in del_map]
 
-    reinstated = [dict(r, reinstated_on=now.strftime("%Y-%m-%d")) for fp, r in curr_map.items() if fp in del_map]
+    reinstated = [dict(r, reinstated_on=now.strftime("%Y-%m-%d")) 
+                  for fp, r in curr_map.items() if fp in del_map]
 
     newly_deleted = []
     for fp, old in live_map.items():
@@ -280,13 +316,17 @@ def run():
 
     print(f"  🆕 New: {len(new_reviews)} | ♻️ Reinstated: {len(reinstated)} | 🗑 Deleted: {len(newly_deleted)}")
 
-    # Save
-    print("\n[4/4] Saving JSON...")
+    # Update and save
+    print("\n[4/4] Saving updated JSON files...")
     updated_live = dict(live_map)
     for fp, r in curr_map.items():
         if fp in updated_live:
-            updated_live[fp].update({"snap_date": r["snap_date"], "snap_time": r["snap_time"],
-                                     "time": r["time"], "parsed_date": r.get("parsed_date")})
+            updated_live[fp].update({
+                "snap_date": r["snap_date"],
+                "snap_time": r["snap_time"],
+                "time": r["time"],
+                "parsed_date": r.get("parsed_date")
+            })
     for r in new_reviews + reinstated:
         updated_live[r["fingerprint"]] = r
     for r in newly_deleted:
@@ -298,22 +338,26 @@ def run():
     for r in reinstated:
         updated_del.pop(r["fingerprint"], None)
 
-    rev_list = sorted(updated_live.values(), key=lambda x: x.get("parsed_date") or x.get("first_seen", ""), reverse=True)
-    del_list = sorted(updated_del.values(), key=lambda x: x.get("deleted_on", ""), reverse=True)
+    rev_list = sorted(updated_live.values(), 
+                      key=lambda x: x.get("parsed_date") or x.get("first_seen", ""), 
+                      reverse=True)
+    del_list = sorted(updated_del.values(), 
+                      key=lambda x: x.get("deleted_on", ""), 
+                      reverse=True)
 
     save_json(REV_JSON, rev_list)
     save_json(DEL_JSON, del_list)
 
     print(f"  rev.json     → {len(rev_list)} reviews")
     print(f"  deleted.json → {len(del_list)} reviews")
-    print(f"\n  ✅ Finished — {run_label}")
-    print("=" * 72)
+    print(f"\n  ✅ Successfully completed — {run_label}")
+    print("=" * 78)
 
 
 if __name__ == "__main__":
     try:
         run()
     except Exception as e:
-        print(f"\n[FATAL] {e}")
+        print(f"\n[FATAL ERROR] {e}")
         traceback.print_exc()
         exit(1)
