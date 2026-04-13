@@ -1,10 +1,7 @@
 """
-Sathya Reviews Scraper v2.4 - Final Stable Version
-- Improved "Newest" sorting with reliable fallbacks (data-index='1')
-- Strict filter: Only reviews less than 23 hours old
-- Proper deduplication using fingerprint
-- Full deleted + reinstated logic preserved
-- Better logging and robustness for GitHub Actions
+Sathya Reviews Scraper v2.5 — Direct Place URL + Reliable Newest Sort
+Uses official direct business profile URLs (same as google-reviews-scraper-pro)
+Only reviews < 23 hours old
 """
 
 import json
@@ -73,10 +70,10 @@ BRANCHES = [
     {"id":36, "name":"Sivakasi",          "place_id":"ChIJI2JvEePOBjsREh8b-x4WF4U", "agm":"Venkatesh"},
 ]
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
+# ── Updated URL: Direct business profile (same as Pro project) ─────────────────
 def place_id_to_url(place_id: str) -> str:
-    return f"https://www.google.com/maps/search/?api=1&query=Google&query_place_id={place_id}"
+    """Direct place URL — much more reliable for "Newest" sorting"""
+    return f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
 
 def make_fingerprint(branch_id: int, author: str, text: str, rating: float) -> str:
@@ -89,16 +86,13 @@ def ist_now() -> datetime:
 
 
 def is_review_within_23_hours(relative_time: str) -> bool:
-    """Only accept reviews shown as less than 23 hours old"""
     if not relative_time:
         return False
     text = relative_time.lower().strip()
-
     if any(word in text for word in ["just now", "minute", "moments", "hour"]):
         return True
     if any(word in text for word in ["day ago", "days ago", "week", "month", "year"]):
         return False
-
     match = re.search(r'(\d+)\s*hour', text)
     if match:
         return int(match.group(1)) < 23
@@ -110,7 +104,6 @@ def parse_relative_time(relative_str: str, reference_date: datetime = None) -> s
         return None
     if reference_date is None:
         reference_date = ist_now()
-
     text = relative_str.lower().strip()
 
     if any(w in text for w in ["just now", "minute", "moments"]):
@@ -149,7 +142,6 @@ def save_json(path: Path, data: list):
 
 
 # ── Scrape One Branch ──────────────────────────────────────────────────────────
-
 def scrape_branch(sb, branch: dict, now: datetime) -> list:
     bid = branch["id"]
     name = branch["name"]
@@ -169,15 +161,12 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
         except:
             pass
 
-    # Try to sort by Newest (most reliable method in 2026)
+    # Reliable "Newest" sort
     sorted_newest = False
     try:
-        # Click Sort button
         if sb.is_element_visible('button[aria-label*="Sort"]', timeout=4):
             sb.click('button[aria-label*="Sort"]')
             time.sleep(2.2)
-
-            # Most reliable selector for "Newest" option
             if sb.is_element_visible('//li[@data-index="1"]', by="xpath", timeout=3):
                 sb.click('//li[@data-index="1"]', by="xpath")
                 time.sleep(2.8)
@@ -189,7 +178,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
     except:
         pass
 
-    sort_status = "(Newest)" if sorted_newest else "(Default - Most relevant)"
+    sort_status = "(Newest)" if sorted_newest else "(Default)"
     print(f"  [{bid:02d}/36] {name:<24} {sort_status}", end="  ", flush=True)
 
     # Scroll
@@ -200,7 +189,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
         """)
         time.sleep(SCROLL_PAUSE)
 
-    # Extract reviews
+    # Extract
     raw = sb.execute_script("""
         (function() {
             var sels = ['.jftiEf', 'div[data-review-id]', '.GHT2ce'];
@@ -229,10 +218,8 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
     for r in raw:
         if not is_review_within_23_hours(r.get("time", "")):
             continue
-
         fp = make_fingerprint(bid, r["author"], r["text"], r["rating"])
-        if fp in seen:
-            continue
+        if fp in seen: continue
         seen.add(fp)
 
         out.append({
@@ -255,19 +242,18 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
-
 def run():
     now = ist_now()
     run_label = now.strftime("%Y-%m-%d %H:%M IST")
 
     print("=" * 85)
-    print(f"  Sathya Reviews Scraper v2.4 — Final Version — {run_label}")
+    print(f"  Sathya Reviews Scraper v2.5 — Direct Place URL — {run_label}")
     print("=" * 85)
 
     print("\n[1/4] Loading existing data...")
     live_map = {r["fingerprint"]: r for r in load_json(REV_JSON) if "fingerprint" in r}
-    del_map  = {r["fingerprint"]: r for r in load_json(DEL_JSON)  if "fingerprint" in r}
-    print(f"  Live reviews: {len(live_map)} | Deleted: {len(del_map)}")
+    del_map = {r["fingerprint"]: r for r in load_json(DEL_JSON) if "fingerprint" in r}
+    print(f"  Live: {len(live_map)} | Deleted: {len(del_map)}")
 
     print(f"\n[2/4] Scraping {len(BRANCHES)} branches...")
     t0 = time.time()
@@ -288,13 +274,13 @@ def run():
                     break
                 except Exception:
                     if attempt == MAX_RETRIES:
-                        print(f"  [{branch['id']:02d}] Failed after retries")
+                        print(f"  [{branch['id']:02d}] Failed")
                     else:
                         time.sleep(random.uniform(6, 10))
             time.sleep(random.uniform(*BRANCH_PAUSE))
 
     elapsed = int(time.time() - t0)
-    print(f"\n[3/4] Processing changes... Total extracted: {len(all_reviews)} reviews ({elapsed//60}m {elapsed%60}s)")
+    print(f"\n[3/4] Processing changes... Total extracted: {len(all_reviews)} reviews")
 
     curr_map = {r["fingerprint"]: r for r in all_reviews}
 
@@ -310,16 +296,12 @@ def run():
 
     print(f"  🆕 New: {len(new_reviews)} | ♻️ Reinstated: {len(reinstated)} | 🗑 Deleted: {len(newly_deleted)}")
 
-    print("\n[4/4] Saving JSON files...")
+    print("\n[4/4] Saving JSON...")
     updated_live = dict(live_map)
     for fp, r in curr_map.items():
         if fp in updated_live:
-            updated_live[fp].update({
-                "snap_date": r["snap_date"],
-                "snap_time": r["snap_time"],
-                "time": r["time"],
-                "parsed_date": r.get("parsed_date")
-            })
+            updated_live[fp].update({"snap_date": r["snap_date"], "snap_time": r["snap_time"],
+                                     "time": r["time"], "parsed_date": r.get("parsed_date")})
     for r in new_reviews + reinstated:
         updated_live[r["fingerprint"]] = r
     for r in newly_deleted:
