@@ -1,9 +1,10 @@
 """
-Sathya Reviews Scraper v2.7
-- Direct Business Profile URL
-- Only reviews ≤ 23 hours old
-- Stores reviewer name, rating, text, time (relative), parsed_date
-- Full deduplication + deleted/reinstated logic
+Sathya Reviews Scraper v2 — Direct Business Profile URL (Outscraper Style)
+- Uses direct https://www.google.com/maps/place/?q=place_id:...
+- Forces "Newest" sorting with reliable fallbacks
+- Only adds reviews ≤ 23 hours old ("a day ago" and older are skipped)
+- Keeps reviewer name, rating, text, original time ("51 minutes ago"), parsed_date
+- Full deduplication + deleted + reinstated logic
 """
 
 import json
@@ -32,7 +33,7 @@ SCROLL_PAUSE = 1.1
 BRANCH_PAUSE = (3.5, 6.0)
 MAX_RETRIES = 2
 
-# ── 36 Branches ────────────────────────────────────────────────────────────────
+# ── 36 Branches with Direct URL Logic ──────────────────────────────────────────
 BRANCHES = [
     {"id":1,  "name":"Tuticorin-1",       "place_id":"ChIJ5zJNoJfvAzsR-bJE_3bbNYw", "agm":"Siva"},
     {"id":2,  "name":"Tuticorin-2",       "place_id":"ChIJH6gY4-PvAzsRJ50skTlx3cs", "agm":"Siva"},
@@ -72,8 +73,9 @@ BRANCHES = [
     {"id":36, "name":"Sivakasi",          "place_id":"ChIJI2JvEePOBjsREh8b-x4WF4U", "agm":"Venkatesh"},
 ]
 
-# ── Direct Business Profile URL ───────────────────────────────────────────────
+# ── Direct Business Profile URL (Same as Outscraper / Pro style) ───────────────
 def place_id_to_url(place_id: str) -> str:
+    """This is the best format for reliable "Newest" sorting"""
     return f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
 
@@ -87,24 +89,18 @@ def ist_now() -> datetime:
 
 
 def is_review_within_23_hours(relative_time: str) -> bool:
-    """Only keep reviews that are 23 hours or less old"""
     if not relative_time:
         return False
     text = relative_time.lower().strip()
 
-    # Accept "51 minutes ago", "2 hours ago", "just now", etc.
     if any(word in text for word in ["just now", "minute", "moments", "hour"]):
         return True
-
-    # Reject anything "a day ago" or older
     if any(word in text for word in ["day ago", "days ago", "week", "month", "year"]):
         return False
 
-    # Numeric hour check
     match = re.search(r'(\d+)\s*hour', text)
     if match:
         return int(match.group(1)) <= 23
-
     return False
 
 
@@ -113,7 +109,6 @@ def parse_relative_time(relative_str: str, reference_date: datetime = None) -> s
         return None
     if reference_date is None:
         reference_date = ist_now()
-
     text = relative_str.lower().strip()
 
     if any(w in text for w in ["just now", "minute", "moments"]):
@@ -199,7 +194,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
         """)
         time.sleep(SCROLL_PAUSE)
 
-    # Extract reviews
+    # Extract
     raw = sb.execute_script("""
         (function() {
             var sels = ['.jftiEf', 'div[data-review-id]', '.GHT2ce'];
@@ -230,8 +225,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
             continue
 
         fp = make_fingerprint(bid, r["author"], r["text"], r["rating"])
-        if fp in seen:
-            continue
+        if fp in seen: continue
         seen.add(fp)
 
         out.append({
@@ -239,10 +233,10 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
             "branch_id": bid,
             "branch_name": name,
             "agm": branch["agm"],
-            "author": r["author"],           # Important for HTML display
+            "author": r["author"],           # For HTML display
             "rating": r["rating"],
             "text": r["text"],
-            "time": r["time"],               # Original: "51 minutes ago"
+            "time": r["time"],               # "51 minutes ago"
             "parsed_date": parse_relative_time(r["time"], now),
             "snap_date": snap_date,
             "snap_time": snap_time,
@@ -253,7 +247,7 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
     return out
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Main Function ──────────────────────────────────────────────────────────────
 def run():
     now = ist_now()
     run_label = now.strftime("%Y-%m-%d %H:%M IST")
@@ -312,12 +306,8 @@ def run():
     updated_live = dict(live_map)
     for fp, r in curr_map.items():
         if fp in updated_live:
-            updated_live[fp].update({
-                "snap_date": r["snap_date"],
-                "snap_time": r["snap_time"],
-                "time": r["time"],
-                "parsed_date": r.get("parsed_date")
-            })
+            updated_live[fp].update({"snap_date": r["snap_date"], "snap_time": r["snap_time"],
+                                     "time": r["time"], "parsed_date": r.get("parsed_date")})
     for r in new_reviews + reinstated:
         updated_live[r["fingerprint"]] = r
     for r in newly_deleted:
@@ -329,7 +319,6 @@ def run():
     for r in reinstated:
         updated_del.pop(r["fingerprint"], None)
 
-    # Sort by parsed_date (most recent first)
     rev_list = sorted(updated_live.values(), key=lambda x: x.get("parsed_date") or x.get("first_seen", ""), reverse=True)
     del_list = sorted(updated_del.values(), key=lambda x: x.get("deleted_on", ""), reverse=True)
 
