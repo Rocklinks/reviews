@@ -283,8 +283,7 @@ def run():
 
     # KEY OPTIMISATION: one SB() instance for all 36 branches.
     # Browser launches once (~4 s), not 36 times (~144 s wasted).
-    with SB(uc=True, headless=True, no_sandbox=True, disable_gpu=True) as sb:
-
+    with SB(uc=True, xvfb=True) as sb:
         # Warm-up visit so Maps cookies/JS are cached before we start timing
         sb.open("https://www.google.com/maps")
         time.sleep(random.uniform(2.0, 3.0))

@@ -40,13 +40,22 @@ jobs:
 
       # ── 3. System deps for Chrome/SeleniumBase ──────────────────────
       - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 \
-            libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libasound2t64 \
-            libpango-1.0-0 libpangocairo-1.0-0 fonts-liberation \
-            --no-install-recommends
+run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          xvfb \                     # ← Add this for virtual display
+          libasound2t64 \
+          libatk-bridge2.0-0 \
+          libdrm2 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxrandr2 \
+          libgbm1 \
+          libxkbcommon0 \
+          libnss3 \
+          libpango-1.0-0 \
+          libpangocairo-1.0-0 \
+          fonts-liberation
 
       # ── 4. Python deps ──────────────────────────────────────────────
       - name: Install Python dependencies
