@@ -36,7 +36,7 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      # ── 3. System dependencies for Chrome + SeleniumBase UC ────────
+# ── 3. System dependencies (including xvfb) ─────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -53,7 +53,9 @@ jobs:
             libnss3 \
             libpango-1.0-0 \
             libpangocairo-1.0-0 \
-            fonts-liberation
+            fonts-liberation \
+            wget \
+            gnupg
 
       # ── 4. Python dependencies ──────────────────────────────────────
       - name: Install Python dependencies
@@ -61,11 +63,18 @@ jobs:
           pip install --upgrade pip
           pip install seleniumbase
 
-      # ── 5. Download UC Chrome ───────────────────────────────────────
-      - name: Download UC Chrome
+      # ── 5. Install Google Chrome + matching Chromedriver ────────────
+      - name: Install Google Chrome and Chromedriver
         run: |
-          python -c "from seleniumbase import SB; print('SeleniumBase OK')"
-          seleniumbase get chromedriver --version=latest || true
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -qq
+          sudo apt-get install -y google-chrome-stable
+
+          google-chrome --version
+
+          # Download matching chromedriver for UC mode
+          seleniumbase get chromedriver stable
 
       # ── 6. Run the scraper ──────────────────────────────────────────
       - name: Run scraper
