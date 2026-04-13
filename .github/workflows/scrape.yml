@@ -2,34 +2,32 @@ name: Tri Hourly Scraper
 
 on:
   schedule:
-    #  UTC time  →  IST (UTC+5:30)
-    - cron: '30 0 * * *'    #  06:00 IST
-    - cron: '30 3 * * *'    #  09:00 IST
-    - cron: '30 6 * * *'    #  12:00 IST
-    - cron: '30 9 * * *'    #  15:00 IST
-    - cron: '30 12 * * *'   #  18:00 IST
-    - cron: '30 15 * * *'   #  21:00 IST
-    - cron: '30 18 * * *'   #  00:00 IST
-    - cron: '30 21 * * *'   #  03:00 IST
+    # UTC time → IST (UTC+5:30)
+    - cron: '30 0 * * *'    # 06:00 IST
+    - cron: '30 3 * * *'    # 09:00 IST
+    - cron: '30 6 * * *'    # 12:00 IST
+    - cron: '30 9 * * *'    # 15:00 IST
+    - cron: '30 12 * * *'   # 18:00 IST
+    - cron: '30 15 * * *'   # 21:00 IST
+    - cron: '30 18 * * *'   # 00:00 IST
+    - cron: '30 21 * * *'   # 03:00 IST
 
-  # Lets you click "Run workflow" manually from the GitHub Actions tab
   workflow_dispatch:
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 50       # full run of 36 branches ≈ 25–35 min
+    timeout-minutes: 50
 
     permissions:
-      contents: write         # needed so the job can git push
+      contents: write
 
     steps:
-
-      # ── 1. Checkout with full history (needed for git push) ─────────
+      # ── 1. Checkout ─────────────────────────────────────────────────
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1      # shallow clone is fine, we only need HEAD
+          fetch-depth: 1
 
       # ── 2. Python ───────────────────────────────────────────────────
       - name: Set up Python 3.11
@@ -38,32 +36,32 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      # ── 3. System deps for Chrome/SeleniumBase ──────────────────────
+      # ── 3. System dependencies for Chrome + SeleniumBase UC ────────
       - name: Install system dependencies
         run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends \
-          xvfb \                     # ← Add this for virtual display
-          libasound2t64 \
-          libatk-bridge2.0-0 \
-          libdrm2 \
-          libxcomposite1 \
-          libxdamage1 \
-          libxrandr2 \
-          libgbm1 \
-          libxkbcommon0 \
-          libnss3 \
-          libpango-1.0-0 \
-          libpangocairo-1.0-0 \
-          fonts-liberation
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libasound2t64 \
+            libatk-bridge2.0-0 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libgbm1 \
+            libxkbcommon0 \
+            libnss3 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            fonts-liberation
 
-      # ── 4. Python deps ──────────────────────────────────────────────
+      # ── 4. Python dependencies ──────────────────────────────────────
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install seleniumbase
 
-      # ── 5. Download Chrome via SeleniumBase (UC mode) ───────────────
+      # ── 5. Download UC Chrome ───────────────────────────────────────
       - name: Download UC Chrome
         run: |
           python -c "from seleniumbase import SB; print('SeleniumBase OK')"
@@ -73,29 +71,21 @@ jobs:
       - name: Run scraper
         run: python scraper.py
 
-      # ── 7. Commit the updated JSON files back to the repo ───────────
-      #
-      # KEY TRICK: We commit with --amend + force-push so git history
-      # doesn't balloon with hundreds of JSON commits over months.
-      # Only ONE commit ("data: latest scrape") ever exists for the data.
-      # This keeps the repo forever lean — storage never grows unboundedly.
-      #
+      # ── 7. Commit updated data ──────────────────────────────────────
       - name: Commit and push updated data
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add docs/rev.json docs/deleted.json
 
-          # Only commit if something actually changed
+          # Only commit if something changed
           if git diff --cached --quiet; then
             echo "No changes to commit — no new/deleted reviews this run."
             exit 0
           fi
 
           NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
-
-          # Count new reviews added in this run (simple grep count)
           LIVE=$(python -c "import json; d=json.load(open('docs/rev.json')); print(len(d))")
           DEL=$(python -c "import json; d=json.load(open('docs/deleted.json')); print(len(d))")
 
@@ -104,7 +94,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 8. On failure: save logs ────────────────────────────────────
+      # ── 8. Upload logs on failure ───────────────────────────────────
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
