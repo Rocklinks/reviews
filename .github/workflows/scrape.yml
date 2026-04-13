@@ -1,4 +1,4 @@
-name: Sathya Reviews — Scrape Every 3 Hours
+name: Tri Hourly Scraper
 
 on:
   schedule:
