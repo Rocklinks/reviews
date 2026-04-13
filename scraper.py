@@ -1,28 +1,13 @@
 """
-Sathya Reviews Scraper  v2
-==========================
-Adapted from google-reviews-scraper-pro (georgekhananaev) — MIT licence.
-
-Key techniques taken from the reference project:
-  • SeleniumBase UC mode  — undetected Chrome (their exact engine)
-  • Search-based navigation URL — their Feb-2026 "limited view" bypass
-  • Incremental-style scraping — compare old vs new, push only diff
-
-Optimised for GitHub Actions:
-  • ~12-15 min per full 36-branch run (vs 30 min naive approach)
-  • Only 5 scrolls per branch — enough to catch reviews from last 3 h
-  • Single browser instance reused across all branches (no relaunch cost)
-  • Tight but safe inter-branch pause (3-5 s)
-  • place_id → search URL conversion (same bypass as the reference project)
-  • JSON stored in docs/ — committed back to repo by GitHub Actions
+Sathya Reviews Scraper v2.1 — with Proper Date Parsing
+Optimized for GitHub Actions + UC Mode + Chrome
 """
 
 import json
-import os
-import sys
 import time
 import random
 import hashlib
+import re
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,23 +15,21 @@ from pathlib import Path
 try:
     from seleniumbase import SB
 except ImportError:
-    print("ERROR: Run  pip install seleniumbase")
-    sys.exit(1)
+    print("ERROR: Run 'pip install seleniumbase'")
+    exit(1)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).parent
-REV_JSON  = REPO_ROOT / "docs" / "rev.json"
-DEL_JSON  = REPO_ROOT / "docs" / "deleted.json"
+REV_JSON = REPO_ROOT / "docs" / "rev.json"
+DEL_JSON = REPO_ROOT / "docs" / "deleted.json"
 
 # ── Tuning ─────────────────────────────────────────────────────────────────────
-# 5 scrolls ≈ 40-60 reviews loaded — plenty for a 3-hour detection window.
-# Increase to 15 if you want all-time reviews on the very first run only.
 SCROLL_COUNT = 5
 SCROLL_PAUSE = 0.9
-BRANCH_PAUSE = (3, 5)   # random seconds between branches (anti-bot pacing)
-MAX_RETRIES  = 2
-# ──────────────────────────────────────────────────────────────────────────────
+BRANCH_PAUSE = (3, 5)
+MAX_RETRIES = 2
 
+# ── 36 Branches ────────────────────────────────────────────────────────────────
 BRANCHES = [
     {"id":1,  "name":"Tuticorin-1",       "place_id":"ChIJ5zJNoJfvAzsR-bJE_3bbNYw", "agm":"Siva"},
     {"id":2,  "name":"Tuticorin-2",       "place_id":"ChIJH6gY4-PvAzsRJ50skTlx3cs", "agm":"Siva"},
@@ -89,40 +72,49 @@ BRANCHES = [
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def place_id_to_url(place_id: str) -> str:
-    """
-    Search-based navigation — exact bypass used by google-reviews-scraper-pro
-    to work around Google's Feb-2026 'limited view' block on direct place URLs.
-
-    Broken since Feb 2026 (logged-out users get limited view):
-        https://www.google.com/maps/place/?q=place_id:ChIJ...
-
-    Works fine, no login needed:
-        https://www.google.com/maps/search/?api=1&query=Google&query_place_id=ChIJ...
-    """
-    return (
-        f"https://www.google.com/maps/search/"
-        f"?api=1&query=Google&query_place_id={place_id}"
-    )
+    return f"https://www.google.com/maps/search/?api=1&query=Google&query_place_id={place_id}"
 
 
 def make_fingerprint(branch_id: int, author: str, text: str, rating: float) -> str:
-    """
-    Stable unique ID per review — same review always produces same fingerprint.
-    This is how we distinguish new vs known vs deleted without relying on dates.
-    (google-reviews-scraper-pro uses a similar review_id from the DOM; we
-    derive ours from content since we don't have Google's internal IDs.)
-    """
-    raw = (
-        f"{branch_id}|"
-        f"{(author or '').strip().lower()}|"
-        f"{(text or '')[:120].strip().lower()}|"
-        f"{round(rating, 1)}"
-    )
+    raw = f"{branch_id}|{(author or '').strip().lower()}|{(text or '')[:120].strip().lower()}|{round(rating, 1)}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
 def ist_now() -> datetime:
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+
+def parse_relative_time(relative_str: str, reference_date: datetime = None) -> str | None:
+    """Convert '2 hours ago', '3 days ago', 'a month ago', etc. into fixed ISO datetime"""
+    if not relative_str:
+        return None
+    if reference_date is None:
+        reference_date = ist_now()
+
+    text = relative_str.lower().strip()
+
+    if any(word in text for word in ["just now", "minute", "moments", "now"]):
+        return reference_date.strftime("%Y-%m-%d %H:%M:%S")
+    if "yesterday" in text:
+        return (reference_date - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    patterns = [
+        (r'(\d+)\s*hour', timedelta(hours=1)),
+        (r'(\d+)\s*day',  timedelta(days=1)),
+        (r'(\d+)\s*week', timedelta(weeks=1)),
+        (r'(\d+)\s*month', timedelta(days=30)),
+        (r'(\d+)\s*year', timedelta(days=365)),
+    ]
+
+    for pattern, unit_delta in patterns:
+        match = re.search(pattern, text)
+        if match:
+            num = int(match.group(1))
+            delta = timedelta(seconds=unit_delta.total_seconds() * num)
+            real_date = reference_date - delta
+            return real_date.strftime("%Y-%m-%d %H:%M:%S")
+
+    return reference_date.strftime("%Y-%m-%d %H:%M:%S")  # fallback
 
 
 def load_json(path: Path) -> list:
@@ -139,72 +131,36 @@ def save_json(path: Path, data: list):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# ── Core scrape ────────────────────────────────────────────────────────────────
+# ── Scrape One Branch ──────────────────────────────────────────────────────────
 
 def scrape_branch(sb, branch: dict, now: datetime) -> list:
-    """
-    Scrape one branch using the existing browser tab.
-    No browser relaunch — reuse the warm Chrome session.
-    This alone halves the total runtime vs recreating SB() per branch.
-    """
-    bid       = branch["id"]
-    name      = branch["name"]
+    bid = branch["id"]
+    name = branch["name"]
     snap_date = now.strftime("%Y-%m-%d")
     snap_time = now.strftime("%H:%M IST")
 
-    # Navigate using search-based URL (google-reviews-scraper-pro technique)
     sb.open(place_id_to_url(branch["place_id"]))
-    time.sleep(random.uniform(2.5, 3.5))
+    time.sleep(random.uniform(3.0, 4.5))
 
-    # Dismiss consent/cookie dialog if present
-    for sel in [
-        'button[aria-label*="Accept"]',
-        'button[id*="accept"]',
-        'form[action*="consent"] button',
-    ]:
+    # Click Reviews tab
+    for sel in ['button[aria-label*="Reviews"]', 'button[aria-label*="reviews"]', '[role="tab"]:nth-child(2)']:
         try:
-            if sb.is_element_visible(sel, timeout=1):
+            if sb.is_element_visible(sel, timeout=3):
                 sb.click(sel)
-                time.sleep(1.0)
-                break
-        except Exception:
-            pass
-
-    # Click the Reviews tab
-    clicked = False
-    for sel in [
-        'button[aria-label*="reviews"]',
-        'button[aria-label*="Reviews"]',
-        'button[jsaction*="review"]',
-        '[role="tab"]:nth-child(2)',
-    ]:
-        try:
-            if sb.is_element_visible(sel, timeout=2):
-                sb.click(sel)
-                clicked = True
                 time.sleep(2.5)
                 break
-        except Exception:
+        except:
             pass
 
-    if not clicked:
-        print("✗ tab", end=" ")
-        return []
-
-    # Scroll to load reviews (5 scrolls ≈ 40-60 reviews, enough for 3h window)
+    # Scroll
     for _ in range(SCROLL_COUNT):
         sb.execute_script("""
-            (function() {
-                var c = document.querySelector('.m6QErb[tabindex]')
-                     || document.querySelector('div[role="feed"]')
-                     || document.querySelector('.DxyBCb');
-                if (c) c.scrollTop = c.scrollHeight;
-                else   window.scrollTo(0, document.body.scrollHeight);
-            })();
+            var c = document.querySelector('.m6QErb[tabindex]') || document.querySelector('div[role="feed"]');
+            if (c) c.scrollTop = c.scrollHeight; else window.scrollTo(0, document.body.scrollHeight);
         """)
         time.sleep(SCROLL_PAUSE)
 
-    # Extract all review cards in one JS call (fast)
+    # Extract
     raw = sb.execute_script("""
         (function() {
             var sels = ['.jftiEf', 'div[data-review-id]', '.GHT2ce'];
@@ -214,43 +170,40 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
                 if (f.length > cards.length) cards = Array.from(f);
             }
             return cards.map(function(c) {
-                var aEl = c.querySelector(
-                    '.d4r55,.X43Kjb,.TSUbDb,[class*="fontHeadlineSmall"]');
-                var rEl = c.querySelector('[aria-label*="star"],[aria-label*="Star"]');
+                var aEl = c.querySelector('.d4r55,.X43Kjb,.TSUbDb,[class*="fontHeadlineSmall"]');
+                var rEl = c.querySelector('[aria-label*="star"]');
                 var tEl = c.querySelector('.wiI7pd,.MyEned,.Jtu6Td');
                 var dEl = c.querySelector('.rsqaWe,.DU9Pgb,span[aria-label*="ago"]');
-                var rm  = (rEl ? rEl.getAttribute('aria-label') : '').match(/([\\d.]+)/);
+                var rm = (rEl ? rEl.getAttribute('aria-label') : '').match(/([\\d.]+)/);
                 return {
                     author: aEl ? aEl.innerText.trim() : 'Anonymous',
-                    rating: rm  ? parseFloat(rm[1])   : 0,
-                    text:   tEl ? tEl.innerText.trim() : '',
-                    time:   dEl
-                        ? (dEl.innerText || dEl.getAttribute('aria-label') || '').trim()
-                        : ''
+                    rating: rm ? parseFloat(rm[1]) : 0,
+                    text: tEl ? tEl.innerText.trim() : '',
+                    time: dEl ? (dEl.innerText || dEl.getAttribute('aria-label') || '').trim() : ''
                 };
-            }).filter(function(r) { return r.rating > 0 && r.author; });
+            }).filter(r => r.rating > 0 && r.author);
         })();
     """) or []
 
-    # Deduplicate within this page (same card can appear twice in DOM)
     seen, out = set(), []
     for r in raw:
         fp = make_fingerprint(bid, r["author"], r["text"], r["rating"])
-        if fp in seen:
-            continue
+        if fp in seen: continue
         seen.add(fp)
+
         out.append({
             "fingerprint": fp,
-            "branch_id":   bid,
+            "branch_id": bid,
             "branch_name": name,
-            "agm":         branch["agm"],
-            "author":      r["author"],
-            "rating":      r["rating"],
-            "text":        r["text"],
-            "time":        r["time"],        # Google's relative string ("2 weeks ago")
-            "snap_date":   snap_date,        # date this scrape run happened
-            "snap_time":   snap_time,        # IST time window of detection
-            "first_seen":  f"{snap_date} {snap_time}",
+            "agm": branch["agm"],
+            "author": r["author"],
+            "rating": r["rating"],
+            "text": r["text"],
+            "time": r["time"],                    # original relative string
+            "parsed_date": parse_relative_time(r["time"], now),  # ← Fixed real date
+            "snap_date": snap_date,
+            "snap_time": snap_time,
+            "first_seen": f"{snap_date} {snap_time}",
         })
     return out
 
@@ -258,33 +211,27 @@ def scrape_branch(sb, branch: dict, now: datetime) -> list:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def run():
-    now       = ist_now()
+    now = ist_now()
     run_label = now.strftime("%Y-%m-%d %H:%M IST")
-    snap_date = now.strftime("%Y-%m-%d")
 
-    print("=" * 62)
-    print(f"  Sathya Reviews Scraper v2  —  {run_label}")
-    print("=" * 62)
+    print("=" * 72)
+    print(f"  Sathya Reviews Scraper v2.1 — {run_label}")
+    print("=" * 72)
 
-    # 1. Load existing data from docs/ ──────────────────────────────────
-    print("\n[1/4] Loading existing JSON...")
-    prev_live    = load_json(REV_JSON)
+    print("\n[1/4] Loading previous data...")
+    prev_live = load_json(REV_JSON)
     prev_deleted = load_json(DEL_JSON)
-    live_map     = {r["fingerprint"]: r for r in prev_live    if "fingerprint" in r}
-    del_map      = {r["fingerprint"]: r for r in prev_deleted if "fingerprint" in r}
-    print(f"  {len(live_map)} live  |  {len(del_map)} deleted")
+    live_map = {r["fingerprint"]: r for r in prev_live if "fingerprint" in r}
+    del_map = {r["fingerprint"]: r for r in prev_deleted if "fingerprint" in r}
+    print(f"  {len(live_map)} live | {len(del_map)} deleted")
 
-    # 2. Scrape all 36 branches ─────────────────────────────────────────
     print(f"\n[2/4] Scraping {len(BRANCHES)} branches...")
-    t0          = time.time()
+    t0 = time.time()
     all_reviews = []
-    ok_bids     = set()
-    fail_bids   = set()
+    ok_bids = set()
+    fail_bids = set()
 
-    # KEY OPTIMISATION: one SB() instance for all 36 branches.
-    # Browser launches once (~4 s), not 36 times (~144 s wasted).
-    with SB(uc=True, xvfb=True) as sb:
-        # Warm-up visit so Maps cookies/JS are cached before we start timing
+    with SB(uc=True, xvfb=True) as sb:   # Best for UC mode on GitHub
         sb.open("https://www.google.com/maps")
         time.sleep(random.uniform(2.0, 3.0))
         print("  [warm-up] ✓")
@@ -292,15 +239,15 @@ def run():
         for branch in BRANCHES:
             bid, name = branch["id"], branch["name"]
             print(f"  [{bid:02d}/36] {name:<24}", end="  ", flush=True)
-            reviews = []
 
+            reviews = []
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     reviews = scrape_branch(sb, branch, now)
                     break
                 except Exception as e:
                     if attempt == MAX_RETRIES:
-                        print(f"✗ ({e})")
+                        print("✗")
                         fail_bids.add(bid)
                     else:
                         print("↺ ", end="", flush=True)
@@ -314,50 +261,33 @@ def run():
             time.sleep(random.uniform(*BRANCH_PAUSE))
 
     elapsed = int(time.time() - t0)
-    print(f"\n  Total: {len(all_reviews)} reviews in {elapsed//60}m {elapsed%60}s")
-    print(f"  OK: {len(ok_bids)}  |  Failed: {len(fail_bids)}")
+    print(f"\n  Scraped {len(all_reviews)} reviews in {elapsed//60}m {elapsed%60}s")
 
-    # 3. Diff: new / reinstated / deleted ───────────────────────────────
-    print("\n[3/4] Calculating diff...")
+    # Diff logic (unchanged)
+    print("\n[3/4] Calculating changes...")
     curr_map = {r["fingerprint"]: r for r in all_reviews}
 
-    new_reviews = [
-        r for fp, r in curr_map.items()
-        if fp not in live_map and fp not in del_map
-    ]
+    new_reviews = [r for fp, r in curr_map.items() if fp not in live_map and fp not in del_map]
 
-    reinstated = []
-    for fp, r in curr_map.items():
-        if fp in del_map:
-            re_r = dict(r)
-            re_r["reinstated_on"] = snap_date
-            reinstated.append(re_r)
+    reinstated = [dict(r, reinstated_on=now.strftime("%Y-%m-%d")) for fp, r in curr_map.items() if fp in del_map]
 
-    # Only mark deleted for branches we successfully scraped
-    # — avoids false deletions caused by network failures
     newly_deleted = []
     for fp, old in live_map.items():
         if old.get("branch_id") in ok_bids and fp not in curr_map:
             d = dict(old)
-            d["deleted_on"] = snap_date
+            d["deleted_on"] = now.strftime("%Y-%m-%d")
             newly_deleted.append(d)
 
-    print(f"  🆕 New: {len(new_reviews)}"
-          f"  ♻️  Reinstated: {len(reinstated)}"
-          f"  🗑  Deleted: {len(newly_deleted)}")
+    print(f"  🆕 New: {len(new_reviews)} | ♻️ Reinstated: {len(reinstated)} | 🗑 Deleted: {len(newly_deleted)}")
 
-    # 4. Build + save updated JSON files ────────────────────────────────
-    print("\n[4/4] Saving JSON files...")
-
+    # Save
+    print("\n[4/4] Saving JSON...")
     updated_live = dict(live_map)
-    for fp, r in curr_map.items():          # refresh time strings on existing records
+    for fp, r in curr_map.items():
         if fp in updated_live:
-            updated_live[fp]["snap_date"] = r["snap_date"]
-            updated_live[fp]["snap_time"] = r["snap_time"]
-            updated_live[fp]["time"]      = r["time"]
-    for r in new_reviews:
-        updated_live[r["fingerprint"]] = r
-    for r in reinstated:
+            updated_live[fp].update({"snap_date": r["snap_date"], "snap_time": r["snap_time"],
+                                     "time": r["time"], "parsed_date": r.get("parsed_date")})
+    for r in new_reviews + reinstated:
         updated_live[r["fingerprint"]] = r
     for r in newly_deleted:
         updated_live.pop(r["fingerprint"], None)
@@ -368,21 +298,16 @@ def run():
     for r in reinstated:
         updated_del.pop(r["fingerprint"], None)
 
-    rev_list = sorted(updated_live.values(),
-                      key=lambda x: x.get("first_seen", ""), reverse=True)
-    del_list = sorted(updated_del.values(),
-                      key=lambda x: x.get("deleted_on", ""),  reverse=True)
+    rev_list = sorted(updated_live.values(), key=lambda x: x.get("parsed_date") or x.get("first_seen", ""), reverse=True)
+    del_list = sorted(updated_del.values(), key=lambda x: x.get("deleted_on", ""), reverse=True)
 
     save_json(REV_JSON, rev_list)
     save_json(DEL_JSON, del_list)
 
-    rev_kb = REV_JSON.stat().st_size // 1024
-    del_kb = DEL_JSON.stat().st_size // 1024
-    print(f"  rev.json     → {len(rev_list)} reviews  ({rev_kb} KB)")
-    print(f"  deleted.json → {len(del_list)} reviews  ({del_kb} KB)")
-
-    print(f"\n  ✅ Done — {run_label}")
-    print("=" * 62)
+    print(f"  rev.json     → {len(rev_list)} reviews")
+    print(f"  deleted.json → {len(del_list)} reviews")
+    print(f"\n  ✅ Finished — {run_label}")
+    print("=" * 72)
 
 
 if __name__ == "__main__":
@@ -391,4 +316,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n[FATAL] {e}")
         traceback.print_exc()
-        sys.exit(1)
+        exit(1)
