@@ -40,7 +40,7 @@ jobs:
 
       # ── 3. System deps for Chrome/SeleniumBase ──────────────────────
       - name: Install system dependencies
-run: |
+        run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
           xvfb \                     # ← Add this for virtual display
