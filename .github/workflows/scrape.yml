@@ -2,7 +2,6 @@ name: Tri Hourly Scraper
 
 on:
   schedule:
-    # UTC time → IST (UTC+5:30)
     - cron: '30 0 * * *'    # 06:00 IST
     - cron: '30 3 * * *'    # 09:00 IST
     - cron: '30 6 * * *'    # 12:00 IST
@@ -11,32 +10,28 @@ on:
     - cron: '30 15 * * *'   # 21:00 IST
     - cron: '30 18 * * *'   # 00:00 IST
     - cron: '30 21 * * *'   # 03:00 IST
-
   workflow_dispatch:
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
 
     permissions:
       contents: write
 
     steps:
-      # ── 1. Checkout ─────────────────────────────────────────────────
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ── 2. Python ───────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
-# ── 3. System dependencies (including xvfb) ─────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -57,30 +52,25 @@ jobs:
             wget \
             gnupg
 
-      # ── 4. Python dependencies ──────────────────────────────────────
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install seleniumbase
 
-      # ── 5. Install Google Chrome + matching Chromedriver ────────────
-      - name: Install Google Chrome and Chromedriver
+      - name: Install Google Chrome + Chromedriver
         run: |
           wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update -qq
           sudo apt-get install -y google-chrome-stable
-
           google-chrome --version
 
-          # Download matching chromedriver for UC mode
+          # Use "stable" for better compatibility with UC mode
           seleniumbase get chromedriver stable
 
-      # ── 6. Run the scraper ──────────────────────────────────────────
       - name: Run scraper
         run: python scraper.py
 
-      # ── 7. Commit updated data ──────────────────────────────────────
       - name: Commit and push updated data
         run: |
           git config user.name "github-actions[bot]"
@@ -88,22 +78,20 @@ jobs:
 
           git add docs/rev.json docs/deleted.json
 
-          # Only commit if something changed
           if git diff --cached --quiet; then
             echo "No changes to commit — no new/deleted reviews this run."
             exit 0
           fi
 
           NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
-          LIVE=$(python -c "import json; d=json.load(open('docs/rev.json')); print(len(d))")
-          DEL=$(python -c "import json; d=json.load(open('docs/deleted.json')); print(len(d))")
+          LIVE=$(python -c "import json; d=json.load(open('docs/rev.json')); print(len(d))" || echo 0)
+          DEL=$(python -c "import json; d=json.load(open('docs/deleted.json')); print(len(d))" || echo 0)
 
           git commit -m "data: ${NOW} | live=${LIVE} deleted=${DEL}"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 8. Upload logs on failure ───────────────────────────────────
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
