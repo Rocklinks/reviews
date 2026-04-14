@@ -1,11 +1,15 @@
 """
-Sathya Reviews Scraper v1 — Google Internal API
-────────────────────────────────────────────────
-• Hits Google's internal reviews RPC endpoint directly (sorted Newest always)
-• Filters to TODAY's reviews only (IST calendar date)
-• Deduplicates by fingerprint — safe to run multiple times per day
-• All reviews in one rev.json, each with snap_date field
+Sathya Reviews Scraper v0.5 — Google Internal API (Pure HTTP)
+────────────────────────────────────────────────────────────
+FIXED BUGS vs previous versions:
+  1. place_id decode — protobuf wrapper correctly stripped (0x0a + length byte)
+                       fields decoded as little-endian int64, not big-endian
+  2. Response parse  — review list is at data[2][0], NOT data[2]
+  3. Date filter     — calendar date (IST), not broken "23h" check
+  4. No scheduler    — GitHub Actions cron handles timing (scrape.yml)
+  5. Single rev.json — no separate daily files; filter by snap_date in JS
 
+REQUIREMENTS: pip install requests
 """
 
 import json
@@ -28,11 +32,11 @@ REV_JSON  = REPO_ROOT / "docs" / "rev.json"
 DEL_JSON  = REPO_ROOT / "docs" / "deleted.json"
 
 # ── Tuning ─────────────────────────────────────────────────────────────────────
-REVIEWS_PER_PAGE = 10      # Google returns max 10 per request
-MAX_PAGES        = 3       # fetch up to 3 pages = 30 reviews per branch
-SORT_NEWEST      = 2       # 1=relevant  2=newest  3=highest  4=lowest
-REQUEST_PAUSE    = (1.0, 2.0)   # seconds between page requests per branch
-BRANCH_PAUSE     = (1.5, 3.0)  # seconds between branches
+REVIEWS_PER_PAGE = 10       # Google returns max 10 per request
+MAX_PAGES        = 3        # up to 30 reviews checked per branch
+SORT_NEWEST      = 2        # 1=relevant 2=newest 3=highest 4=lowest
+REQUEST_PAUSE    = (1.0, 2.0)
+BRANCH_PAUSE     = (1.5, 3.0)
 MAX_RETRIES      = 3
 
 HEADERS = {
@@ -87,6 +91,148 @@ BRANCHES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PLACE_ID DECODER  (verified correct)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def place_id_to_fids(place_id: str) -> tuple[int, int]:
+    """
+    Decode a Google Maps place_id into two signed int64 values (fid1, fid2).
+
+    place_id is base64url encoded protobuf. Structure after decoding:
+      byte  0    : 0x0a  (protobuf field 1, wire type 2 = length-delimited)
+      byte  1    : length of inner payload (always 18)
+      byte  2    : 0x09  (protobuf field 1, wire type 1 = 64-bit)
+      bytes 3-10 : fid1 as little-endian int64
+      byte  11   : 0x11  (protobuf field 2, wire type 1 = 64-bit)
+      bytes 12-19: fid2 as little-endian int64
+
+    Verified against all 36 branches — produces correct hex feature IDs.
+    """
+    padding = (4 - len(place_id) % 4) % 4
+    decoded = base64.urlsafe_b64decode(place_id + "=" * padding)
+
+    if len(decoded) < 20:
+        raise ValueError(f"place_id too short after decode ({len(decoded)} bytes): {place_id}")
+    if decoded[0] != 0x0a:
+        raise ValueError(f"Expected protobuf tag 0x0a, got 0x{decoded[0]:02x}: {place_id}")
+
+    payload = decoded[2:]   # skip 0x0a + length byte
+
+    if payload[0] != 0x09:
+        raise ValueError(f"Expected field tag 0x09, got 0x{payload[0]:02x}: {place_id}")
+    if payload[9] != 0x11:
+        raise ValueError(f"Expected field tag 0x11, got 0x{payload[9]:02x}: {place_id}")
+
+    fid1 = struct.unpack("<q", payload[1:9])[0]    # little-endian signed int64
+    fid2 = struct.unpack("<q", payload[10:18])[0]  # little-endian signed int64
+    return fid1, fid2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  URL BUILDER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_reviews_url(fid1: int, fid2: int, offset: int = 0) -> str:
+    """
+    Build Google Maps internal reviews RPC URL.
+
+    pb parameter breakdown:
+      !1m2!1y{fid1}!2y{fid2}   → identifies the business
+      !2m1!2i{offset}           → pagination: 0=first 10, 10=next 10, etc.
+      !3e2                      → sort = NEWEST (hardcoded, never changes)
+      !4m5!3b1!4b1!5b1!6b1!7b1 → enable text, badges, photos, language fields
+      !5m2!1s__dummy__!7e81     → session token (dummy value works fine)
+    """
+    pb = (
+        f"!1m2!1y{fid1}!2y{fid2}"
+        f"!2m1!2i{offset}"
+        f"!3e{SORT_NEWEST}"
+        f"!4m5!3b1!4b1!5b1!6b1!7b1"
+        f"!5m2!1s__dummy__!7e81"
+    )
+    return (
+        "https://www.google.com/maps/preview/review/listentitiesreviews"
+        f"?authuser=0&hl=en&gl=in"
+        f"&pb={urllib.parse.quote(pb, safe='')}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RESPONSE PARSER  (verified correct structure)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def parse_reviews_response(raw: str) -> list[dict]:
+    """
+    Parse Google's internal RPC response.
+
+    Response format (verified):
+      )]}'\\n          ← anti-XSSI prefix, strip first
+      [null, null, [  ← data[0]=null, data[1]=null, data[2]=reviews wrapper
+        [             ← data[2][0] = the actual list of reviews   ← KEY FIX
+          [           ← one review:
+            [author_id, "Author Name"],   ← r[0], name at r[0][1]
+            "2 hours ago",                ← r[1] = relative time string
+            null,                         ← r[2] = always null
+            "Review text or null",        ← r[3] = text (can be None)
+            5,                            ← r[4] = star rating (1-5)
+            ...
+          ],
+          ...
+        ]
+      ]]
+
+    Previous versions used data[2] — WRONG. Must be data[2][0].
+    """
+    # Strip anti-XSSI prefix
+    text = raw.lstrip()
+    for prefix in (")]}'\n", ")]}'"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"    [WARN] JSON parse failed: {e} | raw start: {repr(raw[:80])}")
+        return []
+
+    # Navigate to the review list: data[2][0]
+    try:
+        review_list = data[2][0]   # ← data[2][0], NOT data[2]
+    except (IndexError, TypeError):
+        return []
+
+    if not review_list:
+        return []
+
+    reviews = []
+    for r in review_list:
+        try:
+            # r[0][1] = author display name
+            # r[1]    = relative time string e.g. "3 hours ago"
+            # r[3]    = review text (can be None for rating-only reviews)
+            # r[4]    = star rating as int/float 1–5
+            author   = r[0][1]             if (r[0] and len(r[0]) > 1)  else None
+            rel_time = r[1]                if len(r) > 1                else None
+            text_val = r[3]                if len(r) > 3                else None
+            rating   = float(r[4])         if len(r) > 4 and r[4]       else None
+
+            if not rating or not (1 <= rating <= 5):
+                continue
+
+            reviews.append({
+                "author": (author or "Anonymous").strip(),
+                "rating": rating,
+                "text":   (text_val or "").strip(),
+                "time":   (rel_time or "").strip(),
+            })
+        except Exception:
+            continue
+
+    return reviews
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  TIME HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -96,19 +242,19 @@ def ist_now() -> datetime:
 
 
 def today_ist() -> str:
-    """Today's IST date string, e.g. '2026-04-14'."""
+    """Today's IST calendar date as string. e.g. '2026-04-14'"""
     return ist_now().strftime("%Y-%m-%d")
 
 
 def parse_relative_time(rel: str, ref: datetime | None = None) -> str | None:
     """
-    Convert Google's relative time string to an absolute IST datetime string.
+    Convert Google's relative time string to absolute IST datetime string.
 
-    Examples:
-      '3 hours ago'    → '2026-04-14 08:30:00'
-      '45 minutes ago' → '2026-04-14 11:15:00'
-      'just now'       → '2026-04-14 11:59:00'
-      'a day ago'      → '2026-04-13 11:59:00'
+    '3 hours ago'    → '2026-04-14 08:30:00'
+    '45 minutes ago' → '2026-04-14 11:15:00'
+    'just now'       → '2026-04-14 11:59:00'
+    'a day ago'      → '2026-04-13 11:59:00'
+    '2 days ago'     → '2026-04-12 11:59:00'
     """
     if not rel:
         return None
@@ -116,17 +262,20 @@ def parse_relative_time(rel: str, ref: datetime | None = None) -> str | None:
         ref = ist_now()
     t = rel.lower().strip()
 
-    if any(w in t for w in ["just now", "minute", "moment"]):
+    if any(w in t for w in ["just now", "moment"]):
         return ref.strftime("%Y-%m-%d %H:%M:%S")
-    if "yesterday" in t:
-        return (ref - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Handle "a minute ago", "a day ago", "an hour ago" etc.
+    t = re.sub(r'\ban\b', '1', t)
+    t = re.sub(r'\ba\b',  '1', t)
 
     patterns = [
-        (r"(\d+)\s*hour",  timedelta(hours=1)),
-        (r"(\d+)\s*day",   timedelta(days=1)),
-        (r"(\d+)\s*week",  timedelta(weeks=1)),
-        (r"(\d+)\s*month", timedelta(days=30)),
-        (r"(\d+)\s*year",  timedelta(days=365)),
+        (r"(\d+)\s*minute", timedelta(minutes=1)),
+        (r"(\d+)\s*hour",   timedelta(hours=1)),
+        (r"(\d+)\s*day",    timedelta(days=1)),
+        (r"(\d+)\s*week",   timedelta(weeks=1)),
+        (r"(\d+)\s*month",  timedelta(days=30)),
+        (r"(\d+)\s*year",   timedelta(days=365)),
     ]
     for pat, unit in patterns:
         m = re.search(pat, t)
@@ -139,17 +288,17 @@ def parse_relative_time(rel: str, ref: datetime | None = None) -> str | None:
 
 def is_today(parsed_date: str | None, today: str) -> bool:
     """
-    Return True ONLY if parsed_date falls on today's IST calendar date.
+    True only if parsed_date is on today's IST calendar date.
 
-    Why calendar date and not '< 23 hours':
-      A review posted yesterday at 11:50 PM is only 10 min old at midnight,
-      so it would wrongly pass a 23h check — but it belongs to YESTERDAY.
-      Checking startswith(today) is exact and never wrong.
+    Why not '< 23 hours':
+      A review from yesterday 11:50 PM is only 10 min old at midnight.
+      It would wrongly pass a 23h check — but belongs to YESTERDAY.
+      Calendar date is exact and never wrong.
 
-      today='2026-04-14'
-        '2026-04-14 03:15:00' → True   ✅
-        '2026-04-13 23:50:00' → False  ❌  (yesterday)
-        '2026-04-14 23:29:00' → True   ✅
+      today = '2026-04-14'
+        '2026-04-14 03:00:00'  → True   (today 3am)
+        '2026-04-13 23:50:00'  → False  (yesterday)
+        '2026-04-14 23:29:00'  → True   (today 11:29pm)
     """
     if not parsed_date:
         return False
@@ -162,8 +311,8 @@ def is_today(parsed_date: str | None, today: str) -> bool:
 
 def make_fingerprint(branch_id: int, author: str, text: str, rating: float) -> str:
     """
-    Stable unique ID for a review. Same review scraped 10× = same fingerprint.
-    Based on branch + author + first 120 chars of text + rating.
+    Stable unique ID per review.
+    Same review scraped at 9am and 3pm produces the same fingerprint.
     """
     raw = (
         f"{branch_id}|"
@@ -189,106 +338,6 @@ def save_json(path: Path, data: list):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GOOGLE INTERNAL API
-# ══════════════════════════════════════════════════════════════════════════════
-
-def place_id_to_fids(place_id: str) -> tuple[int, int]:
-    """
-    Decode a Google Maps place_id (base64url) into two signed int64 values.
-
-    Google's place_id is base64url-encoded bytes. Decoded = 16 bytes.
-    Split into two 8-byte chunks → each big-endian signed int64.
-    These (fid1, fid2) identify the business in the reviews RPC.
-
-    e.g. 'ChIJ5zJNoJfvAzsR-bJE_3bbNYw'
-          → bytes → fid1=-5756223995023699225, fid2=-8341338698765386119
-    """
-    padding = (4 - len(place_id) % 4) % 4
-    decoded = base64.urlsafe_b64decode(place_id + "=" * padding)
-    if len(decoded) < 16:
-        raise ValueError(f"place_id decoded to only {len(decoded)} bytes: {place_id}")
-    fid1 = struct.unpack(">q", decoded[0:8])[0]
-    fid2 = struct.unpack(">q", decoded[8:16])[0]
-    return fid1, fid2
-
-
-def build_reviews_url(fid1: int, fid2: int, offset: int = 0) -> str:
-    """
-    Build Google Maps internal reviews RPC URL.
-
-    Endpoint : /maps/preview/review/listentitiesreviews
-    pb param breakdown:
-      !1m2!1y{fid1}!2y{fid2}   → which business
-      !2m1!2i{offset}           → pagination (0, 10, 20 …)
-      !3e2                      → sort = NEWEST (hardcoded)
-      !4m5!3b1!4b1!5b1!6b1!7b1 → enable text, photos, badges, language
-      !5m2!1s__dummy__!7e81     → session token (dummy is fine)
-    """
-    pb = (
-        f"!1m2!1y{fid1}!2y{fid2}"
-        f"!2m1!2i{offset}"
-        f"!3e{SORT_NEWEST}"
-        f"!4m5!3b1!4b1!5b1!6b1!7b1"
-        f"!5m2!1s__dummy__!7e81"
-    )
-    return (
-        "https://www.google.com/maps/preview/review/listentitiesreviews"
-        f"?authuser=0&hl=en&gl=in"
-        f"&pb={urllib.parse.quote(pb, safe='')}"
-    )
-
-
-def parse_reviews_response(raw: str) -> list[dict]:
-    """
-    Parse Google's RPC response into a list of raw review dicts.
-
-    Response format:
-      )]}'\n   ← anti-XSSI prefix, strip this first
-      [...]    ← nested JSON array
-        [2]    ← list of review arrays
-          [0]  → [author_info, relative_time, ?, text, rating, ...]
-    """
-    text = raw.lstrip()
-    for prefix in (")]}'\n", ")]}'"):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-            break
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-
-    try:
-        review_list = data[2]
-    except (IndexError, TypeError):
-        return []
-
-    if not review_list:
-        return []
-
-    reviews = []
-    for r in review_list:
-        try:
-            author   = r[0][1] if r[0] else None
-            rel_time = r[1]        if len(r) > 1 else None
-            text_val = r[3]        if len(r) > 3 else None
-            rating   = float(r[4]) if len(r) > 4 and r[4] else None
-
-            if rating and rating > 0:
-                reviews.append({
-                    "author": author   or "Anonymous",
-                    "rating": rating,
-                    "text":   text_val or "",
-                    "time":   rel_time or "",   # "3 hours ago"
-                })
-        except Exception:
-            continue
-
-    return reviews
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 #  SCRAPE ONE BRANCH
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -299,8 +348,8 @@ def scrape_branch(
     today:   str,
 ) -> list[dict]:
     """
-    Fetch today's reviews for one branch.
-    Returns list of review dicts ready to merge into rev.json.
+    Fetch today's reviews for one branch via Google's internal API.
+    Returns list of review dicts (only today's, deduplicated within branch).
     """
     bid       = branch["id"]
     name      = branch["name"]
@@ -310,7 +359,7 @@ def scrape_branch(
     try:
         fid1, fid2 = place_id_to_fids(branch["place_id"])
     except Exception as e:
-        print(f"  [{bid:02d}/36] {name:<24} ✗  place_id error: {e}")
+        print(f"  [{bid:02d}/36] {name:<24} ✗  decode error: {e}")
         return []
 
     seen: set[str]   = set()
@@ -320,28 +369,29 @@ def scrape_branch(
         offset = page * REVIEWS_PER_PAGE
         url    = build_reviews_url(fid1, fid2, offset=offset)
 
-        # HTTP request with retry
+        # HTTP with retry
         resp = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                resp = session.get(url, headers=HEADERS, timeout=15)
+                resp = session.get(url, headers=HEADERS, timeout=20)
                 resp.raise_for_status()
                 break
             except Exception as e:
                 if attempt == MAX_RETRIES:
-                    print(f"  [{bid:02d}/36] {name:<24} ✗  HTTP fail p{page}: {e}")
+                    print(f"  [{bid:02d}/36] {name:<24} ✗  HTTP fail (page {page}): {e}")
                     return out
                 time.sleep(random.uniform(3, 6))
 
         raw_reviews = parse_reviews_response(resp.text)
+
         if not raw_reviews:
-            break   # no more reviews on this page, stop paginating
+            break   # no more reviews on this page
 
         found_old = False
         for r in raw_reviews:
             parsed = parse_relative_time(r["time"], now)
 
-            # Calendar-date filter: skip anything not from today
+            # Skip reviews that are not from today's IST calendar date
             if not is_today(parsed, today):
                 found_old = True
                 continue
@@ -359,15 +409,15 @@ def scrape_branch(
                 "author":      r["author"],
                 "rating":      r["rating"],
                 "text":        r["text"],
-                "time":        r["time"],           # "3 hours ago"
-                "parsed_date": parsed,              # "2026-04-14 08:30:00"
-                "snap_date":   snap_date,           # "2026-04-14"
-                "snap_time":   snap_time,           # "11:30 IST"
+                "time":        r["time"],           # e.g. "3 hours ago"
+                "parsed_date": parsed,              # e.g. "2026-04-14 08:30:00"
+                "snap_date":   snap_date,           # e.g. "2026-04-14"
+                "snap_time":   snap_time,           # e.g. "11:30 IST"
                 "first_seen":  f"{snap_date} {snap_time}",
             })
 
-        # Reviews are newest-first. Once we hit one from before today,
-        # all subsequent pages will also be old — no need to continue.
+        # Reviews are newest-first. Once we see one from before today,
+        # all further pages will also be old — safe to stop.
         if found_old:
             break
 
@@ -387,18 +437,17 @@ def run():
     label = now.strftime("%Y-%m-%d %H:%M IST")
 
     print("=" * 90)
-    print(f"  Sathya Reviews Scraper v1  |  {label}  |  Date: {today}")
+    print(f"  Sathya Reviews Scraper v0.5  |  {label}  |  Date bucket: {today}")
     print("=" * 90)
 
-    # ── 1. Load existing data ───────────────────────────────────────────────
+    # ── 1. Load existing ────────────────────────────────────────────────────
     print("\n[1/4] Loading existing data...")
     live_map = {r["fingerprint"]: r for r in load_json(REV_JSON) if "fingerprint" in r}
     del_map  = {r["fingerprint"]: r for r in load_json(DEL_JSON) if "fingerprint" in r}
 
     today_already = sum(1 for r in live_map.values() if r.get("snap_date") == today)
-    print(f"  All-time live : {len(live_map)}")
-    print(f"  Deleted       : {len(del_map)}")
-    print(f"  Today so far  : {today_already}  (from earlier runs today)")
+    print(f"  All-time : {len(live_map)} live  |  {len(del_map)} deleted")
+    print(f"  Today    : {today_already} already collected (earlier runs)")
 
     # ── 2. Scrape ───────────────────────────────────────────────────────────
     print(f"\n[2/4] Scraping {len(BRANCHES)} branches...")
@@ -417,33 +466,32 @@ def run():
                 break
             except Exception:
                 if attempt == MAX_RETRIES:
-                    print(f"  [{branch['id']:02d}] Failed after {MAX_RETRIES} attempts")
+                    print(f"  [{branch['id']:02d}] Branch failed completely")
                 else:
                     time.sleep(random.uniform(5, 10))
         time.sleep(random.uniform(*BRANCH_PAUSE))
 
-    elapsed = int(time.time() - t0)
-    print(f"\n  Scraped in {elapsed}s — {len(all_this_run)} today's reviews found this run")
+    print(f"\n  Scraped in {int(time.time()-t0)}s — {len(all_this_run)} today's reviews this run")
 
     # ── 3. Deduplicate and classify ─────────────────────────────────────────
     print("\n[3/4] Processing...")
     curr_map = {r["fingerprint"]: r for r in all_this_run}
 
-    # New: today's review not seen in all-time live or deleted
+    # New = not seen in all-time live AND not in deleted
     new_reviews = [
         r for fp, r in curr_map.items()
         if fp not in live_map and fp not in del_map
     ]
 
-    # Reinstated: was deleted, now visible again
+    # Reinstated = was deleted, now visible again
     reinstated = [
         dict(r, reinstated_on=today)
         for fp, r in curr_map.items()
         if fp in del_map
     ]
 
-    # Deleted: was in today's live set in a previous run, now gone
-    # (only flag today's reviews as deleted — don't touch older history)
+    # Deleted = was live as a TODAY review in a previous run, now gone
+    # (never touch reviews from previous days — they're historical)
     newly_deleted = [
         dict(old, deleted_on=today)
         for fp, old in live_map.items()
@@ -456,13 +504,12 @@ def run():
     print(f"  ♻️  Reinstated : {len(reinstated)}")
     print(f"  🗑  Deleted    : {len(newly_deleted)}")
 
-    # ── 4. Save ────────────────────────────────────────────────────────────
+    # ── 4. Save ─────────────────────────────────────────────────────────────
     print("\n[4/4] Saving...")
 
-    # Update all-time live map
     updated_live = dict(live_map)
 
-    # Refresh snap_time for reviews seen again this run
+    # Refresh snap_time for reviews we've seen again this run
     for fp, r in curr_map.items():
         if fp in updated_live:
             updated_live[fp]["snap_time"] = r["snap_time"]
@@ -483,14 +530,14 @@ def run():
     for r in reinstated:
         updated_del.pop(r["fingerprint"], None)
 
-    # Sort rev.json: newest parsed_date first
+    # Sort rev.json newest parsed_date first
     rev_list = sorted(
         updated_live.values(),
         key=lambda x: x.get("parsed_date") or x.get("first_seen", ""),
         reverse=True,
     )
 
-    # Sort deleted.json: most recently deleted first
+    # Sort deleted.json most recently deleted first
     del_list = sorted(
         updated_del.values(),
         key=lambda x: x.get("deleted_on", ""),
