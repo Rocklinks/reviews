@@ -10,14 +10,14 @@ on:
     - cron: '30 15 * * *'   # 21:00 IST
     - cron: '30 18 * * *'   # 00:00 IST
     - cron: '30 21 * * *'   # 03:00 IST
-  workflow_dispatch:       
+  workflow_dispatch:         # manual trigger from GitHub UI any time
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15    
+    timeout-minutes: 15      # pure HTTP — finishes in 3-5 min normally
     permissions:
-      contents: write        
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -37,7 +37,7 @@ jobs:
       - name: Run scraper
         run: python scraper.py
 
-      - name: Commit and push updated data
+      - name: Commit and push
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -45,22 +45,36 @@ jobs:
           git add docs/rev.json docs/deleted.json
 
           if git diff --cached --quiet; then
-            echo "No changes to commit — no new or deleted reviews this run."
+            echo "No changes — no new reviews this run."
             exit 0
           fi
 
           NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
-          LIVE=$(python -c "import json; print(len(json.load(open('docs/rev.json'))))"     || echo 0)
-          DEL=$(python  -c "import json; print(len(json.load(open('docs/deleted.json'))))" || echo 0)
-          TODAY=$(python -c "
-          import json, datetime
-          today = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
-          data  = json.load(open('docs/rev.json'))
-          count = sum(1 for r in data if r.get('snap_date') == today)
-          print(count)
+
+          LIVE=$(python -c "
+          import json
+          print(len(json.load(open('docs/rev.json'))))
           " || echo 0)
 
-          git commit -m "data: ${NOW} | live=${LIVE} today=${TODAY} deleted=${DEL}"
+          DEL=$(python -c "
+          import json
+          print(len(json.load(open('docs/deleted.json'))))
+          " || echo 0)
+
+          TODAY_IST=$(python -c "
+          from datetime import datetime, timedelta
+          print((datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d'))
+          ")
+
+          TODAY_COUNT=$(python -c "
+          import json
+          from datetime import datetime, timedelta
+          today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
+          data  = json.load(open('docs/rev.json'))
+          print(sum(1 for r in data if r.get('snap_date') == today))
+          " || echo 0)
+
+          git commit -m "data: ${NOW} | live=${LIVE} today(${TODAY_IST})=${TODAY_COUNT} deleted=${DEL}"
           git push
 
         env:
