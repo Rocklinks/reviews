@@ -1,4 +1,5 @@
-name: Tri Hourly Scraper
+name: Scraper
+
 on:
   schedule:
     - cron: '30 0 * * *'    # 06:00 IST
@@ -9,43 +10,66 @@ on:
     - cron: '30 15 * * *'   # 21:00 IST
     - cron: '30 18 * * *'   # 00:00 IST
     - cron: '30 21 * * *'   # 03:00 IST
-  workflow_dispatch:
+  workflow_dispatch:       
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15        # ← reduced from 55, no Chrome needed
+    timeout-minutes: 15    
     permissions:
-      contents: write
+      contents: write        
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
       - name: Install dependencies
-        run: pip install requests   # ← just this, no selenium, no chrome
+        run: pip install requests
 
       - name: Run scraper
         run: python scraper.py
 
-      - name: Commit and push
+      - name: Commit and push updated data
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add docs/rev.json docs/deleted.json
+
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "No changes to commit — no new or deleted reviews this run."
             exit 0
           fi
+
           NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
-          LIVE=$(python -c "import json; print(len(json.load(open('docs/rev.json'))))" || echo 0)
-          DEL=$(python -c "import json; print(len(json.load(open('docs/deleted.json'))))" || echo 0)
-          git commit -m "data: ${NOW} | live=${LIVE} deleted=${DEL}"
+          LIVE=$(python -c "import json; print(len(json.load(open('docs/rev.json'))))"     || echo 0)
+          DEL=$(python  -c "import json; print(len(json.load(open('docs/deleted.json'))))" || echo 0)
+          TODAY=$(python -c "
+          import json, datetime
+          today = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
+          data  = json.load(open('docs/rev.json'))
+          count = sum(1 for r in data if r.get('snap_date') == today)
+          print(count)
+          " || echo 0)
+
+          git commit -m "data: ${NOW} | live=${LIVE} today=${TODAY} deleted=${DEL}"
           git push
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-failure-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
