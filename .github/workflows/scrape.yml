@@ -1,5 +1,4 @@
 name: Tri Hourly Scraper
-
 on:
   schedule:
     - cron: '30 0 * * *'    # 06:00 IST
@@ -15,87 +14,38 @@ on:
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
-
+    timeout-minutes: 15        # ← reduced from 55, no Chrome needed
     permissions:
       contents: write
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            xvfb \
-            libasound2t64 \
-            libatk-bridge2.0-0 \
-            libdrm2 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxrandr2 \
-            libgbm1 \
-            libxkbcommon0 \
-            libnss3 \
-            libpango-1.0-0 \
-            libpangocairo-1.0-0 \
-            fonts-liberation \
-            wget \
-            gnupg
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install seleniumbase
-
-      - name: Install Google Chrome + Chromedriver
-        run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update -qq
-          sudo apt-get install -y google-chrome-stable
-          google-chrome --version
-
-          # Use "stable" for better compatibility with UC mode
-          seleniumbase get chromedriver stable
+      - name: Install dependencies
+        run: pip install requests   # ← just this, no selenium, no chrome
 
       - name: Run scraper
         run: python scraper.py
 
-      - name: Commit and push updated data
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add docs/rev.json docs/deleted.json
-
           if git diff --cached --quiet; then
-            echo "No changes to commit — no new/deleted reviews this run."
+            echo "No changes to commit."
             exit 0
           fi
-
           NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
-          LIVE=$(python -c "import json; d=json.load(open('docs/rev.json')); print(len(d))" || echo 0)
-          DEL=$(python -c "import json; d=json.load(open('docs/deleted.json')); print(len(d))" || echo 0)
-
+          LIVE=$(python -c "import json; print(len(json.load(open('docs/rev.json'))))" || echo 0)
+          DEL=$(python -c "import json; print(len(json.load(open('docs/deleted.json'))))" || echo 0)
           git commit -m "data: ${NOW} | live=${LIVE} deleted=${DEL}"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scraper-failure-${{ github.run_id }}
-          path: "*.log"
-          retention-days: 7
