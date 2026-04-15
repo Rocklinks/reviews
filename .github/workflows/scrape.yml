@@ -2,33 +2,59 @@ name: Sathya Reviews Scraper
 
 on:
   schedule:
-    - cron: '30 0,6,12,18 * * *'   # IST 6:00 AM, 12:00 PM, 6:00 PM, 12:00 AM
+    - cron: '30 0,6,12,18 * * *'   # 6:00 AM, 12:00 PM, 6:00 PM, 12:00 AM IST
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Python
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install chromium --with-deps
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: Run Scraper
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt --upgrade
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright Chromium + system deps
+        run: playwright install chromium --with-deps
+
+      - name: Run the scraper
         run: python scraper.py
+        continue-on-error: false   # Fail the job if scraper crashes
 
       - name: Commit and push updated JSON files
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "action@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/rev.json docs/deleted.json
-          git commit -m "Update reviews - $(date '+%Y-%m-%d %H:%M IST')" || echo "No changes"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update reviews - $(date '+%Y-%m-%d %H:%M IST')"
+            git push
+          fi
         continue-on-error: true
