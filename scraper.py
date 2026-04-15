@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth   # ← Correct import for v2.x
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).parent
@@ -17,7 +17,7 @@ REV_JSON = REPO_ROOT / "docs" / "rev.json"
 DEL_JSON = REPO_ROOT / "docs" / "deleted.json"
 
 # ── Concurrency Control ────────────────────────────────────────────────────────
-MAX_CONCURRENT = 4   # ← Change this (3-5 is recommended for stability)
+MAX_CONCURRENT = 4   # Safe default. Try 3 if you get blocked.
 
 # ── Branches (your full list) ──────────────────────────────────────────────────
 BRANCHES = [
@@ -59,7 +59,7 @@ BRANCHES = [
     {"id":36, "name":"Sivakasi", "place_id":"ChIJI2JvEePOBjsREh8b-x4WF4U", "agm":"Venkatesh"},
 ]
 
-# ── Time helpers (unchanged) ───────────────────────────────────────────────────
+# ── Time helpers ───────────────────────────────────────────────────────────────
 def ist_now() -> datetime:
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
@@ -113,7 +113,7 @@ def save_json(path: Path, data: list):
 
 # ── Async Scrape One Branch ────────────────────────────────────────────────────
 async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str, semaphore: asyncio.Semaphore) -> list[dict]:
-    async with semaphore:   # Limits concurrent branches
+    async with semaphore:
         bid = branch["id"]
         name = branch["name"]
         place_id = branch["place_id"]
@@ -123,7 +123,9 @@ async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str
         seen = set()
 
         try:
-            async with async_playwright() as p:
+            stealth = Stealth()   # New v2.x usage
+
+            async with stealth.use_async(async_playwright()) as p:   # Recommended context manager
                 browser = await p.chromium.launch(
                     headless=True,
                     args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
@@ -132,7 +134,6 @@ async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str
                     viewport={"width": 1280, "height": 900},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
                 )
-                await stealth_async(context)
 
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -147,7 +148,7 @@ async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str
                 except:
                     pass
 
-                # Scroll + expand "More" buttons
+                # Scroll + expand "More"
                 for _ in range(18):
                     more_buttons = page.locator("button.w8nwRe, span.w8nwRe, button:has-text('More'), span:has-text('More')")
                     for btn in await more_buttons.all():
@@ -166,16 +167,18 @@ async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str
                 review_cards = page.locator('div.jftiEf')
                 for card in await review_cards.all():
                     try:
-                        author = (await (await card.locator('.d4r55, .fontHeadlineSmall').first).inner_text(timeout=3000)).strip()
-                        rating_text = await (await card.locator('.hCCjke .NhBTye').first).get_attribute('aria-label', timeout=3000) or ""
+                        author_elem = card.locator('.d4r55, .fontHeadlineSmall').first
+                        author = (await author_elem.inner_text(timeout=3000)).strip()
+
+                        rating_text = await card.locator('.hCCjke .NhBTye').first.get_attribute('aria-label', timeout=3000) or ""
                         rating_match = re.search(r'(\d+\.?\d*)', rating_text)
                         rating = float(rating_match.group(1)) if rating_match else None
 
                         text_elem = card.locator('.wiI7pd')
-                        text = (await (await text_elem).inner_text(timeout=3000)).strip() if await text_elem.count() > 0 else ""
+                        text = (await text_elem.inner_text(timeout=3000)).strip() if await text_elem.count() > 0 else ""
 
-                        time_elem = card.locator('.rsqaWe, .DU9Pgb')
-                        rel_time = (await (await time_elem.first).inner_text(timeout=3000)).strip() if await time_elem.count() > 0 else ""
+                        time_elem = card.locator('.rsqaWe, .DU9Pgb').first
+                        rel_time = (await time_elem.inner_text(timeout=3000)).strip() if await time_elem.count() > 0 else ""
 
                         if not rating or not (1 <= rating <= 5):
                             continue
@@ -209,19 +212,19 @@ async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str
                 await browser.close()
 
         except Exception as e:
-            print(f" [{bid:02d}/36] {name:<24} ✗ Async Playwright error: {str(e)[:100]}")
+            print(f" [{bid:02d}/36] {name:<24} ✗ Async error: {str(e)[:120]}")
 
         count = len(reviews)
-        print(f" [{bid:02d}/36] {name:<24} ✓ {count:2d} today's reviews (Async)")
+        print(f" [{bid:02d}/36] {name:<24} ✓ {count:2d} today's reviews")
         return reviews
 
-# ── Main Async Runner ──────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 async def async_run():
     now = ist_now()
     today = today_ist()
     label = now.strftime("%Y-%m-%d %H:%M IST")
     print("=" * 110)
-    print(f" Sathya Reviews Scraper v0.2 — Async Playwright (Max {MAX_CONCURRENT} concurrent) | {label}")
+    print(f" Sathya Reviews Scraper — Async (Max {MAX_CONCURRENT} concurrent) | {label}")
     print("=" * 110)
 
     live_map = {r["fingerprint"]: r for r in load_json(REV_JSON) if "fingerprint" in r}
@@ -233,22 +236,16 @@ async def async_run():
     tasks = [scrape_branch_playwright_async(branch, now, today, semaphore) for branch in BRANCHES]
 
     all_this_run = []
-    ok_bids = set()
-
-    # Run with progress
     for completed in asyncio.as_completed(tasks):
         try:
             reviews = await completed
             all_this_run.extend(reviews)
-            # Note: ok_bids tracking is approximate in async (we mark as ok if task completed)
-            # For precise deletion detection we still use successful branches
         except Exception as e:
-            print(f" A task failed: {e}")
+            print(f" Task failed: {e}")
 
-    # For simplicity, mark all branches that had a task as "ok" (adjust if needed)
     ok_bids = {b["id"] for b in BRANCHES}
 
-    # Your original merging logic + monthly deletion tracking
+    # Merging logic + monthly deletion tracking (unchanged)
     curr_map = {r["fingerprint"]: r for r in all_this_run}
     new_reviews = [r for fp, r in curr_map.items() if fp not in live_map and fp not in del_map]
     reinstated = [dict(r, reinstated_on=today) for fp, r in curr_map.items() if fp in del_map]
@@ -257,27 +254,22 @@ async def async_run():
     monthly_deleted = {}
 
     for fp, old in live_map.items():
-        if (old.get("branch_id") in ok_bids and 
-            fp not in curr_map and 
-            old.get("snap_date") == today):
-            
-            deleted_review = dict(old, deleted_on=today)
-            deleted_review["deleted_month"] = today[:7]   # e.g. "2026-04"
+        if (old.get("branch_id") in ok_bids and fp not in curr_map and old.get("snap_date") == today):
+            deleted_review = dict(old, deleted_on=today, deleted_month=today[:7])
             newly_deleted.append(deleted_review)
-
             key = f"branch_{old['branch_id']}_{today[:7]}"
             monthly_deleted[key] = monthly_deleted.get(key, 0) + 1
 
     print(f" 🆕 New : {len(new_reviews)} | ♻️ Reinstated : {len(reinstated)} | 🗑 Deleted : {len(newly_deleted)}")
 
     if newly_deleted:
-        print(" Monthly deletions this run:")
+        print(" Monthly deletions:")
         for key, cnt in sorted(monthly_deleted.items()):
             branch_id = int(key.split('_')[1])
             month = key.split('_')[2]
             print(f"   Branch {branch_id:2d} ({month}) → {cnt} deleted")
 
-    # Update files
+    # Update JSON files
     updated_live = dict(live_map)
     for r in new_reviews + reinstated:
         updated_live[r["fingerprint"]] = r
@@ -297,12 +289,11 @@ async def async_run():
     save_json(DEL_JSON, del_list)
 
     today_total = sum(1 for r in rev_list if r.get("snap_date") == today)
-    print(f"\n docs/rev.json → {len(rev_list)} total | {today_total} for {today}")
-    print(f" docs/deleted.json → {len(del_list)} (with monthly tracking)")
-    print(f" ✅ Done — Async Playwright Hardened")
+    print(f"\n docs/rev.json → {len(rev_list)} total | {today_total} today")
+    print(f" docs/deleted.json → {len(del_list)}")
+    print(f" ✅ Done")
     print("=" * 110)
 
-# ── Entry Point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     try:
         asyncio.run(async_run())
