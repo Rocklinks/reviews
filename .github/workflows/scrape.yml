@@ -1,60 +1,52 @@
 name: Sathya Reviews Scraper
 
 on:
+  # Runs every day at 6 AM, 12 PM, 6 PM, 12 AM (IST offset is +5:30)
+  # To run at 06:30 UTC is 12:00 PM IST. 
+  # Your request said 6am, 12pm, 6pm, 12am IST.
+  # IST = UTC+5:30.
+  # 12am IST = 18:30 UTC previous day.
+  # 6am IST = 00:30 UTC.
+  # 12pm IST = 06:30 UTC.
+  # 6pm IST = 12:30 UTC.
   schedule:
-    - cron: '30 0,6,12,18 * * *'   # 6:00 AM, 12:00 PM, 6:00 PM, 12:00 AM IST
+    - cron: '30 0 * * *'  # 6:00 AM IST
+    - cron: '30 6 * * *'  # 12:00 PM IST
+    - cron: '30 12 * * *' # 6:00 PM IST
+    - cron: '30 18 * * *' # 12:00 AM IST (Next day)
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install Python dependencies
+      - name: Install Dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt --upgrade
+          pip install -r requirements.txt
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install Playwright Chromium + system deps
-        run: playwright install chromium --with-deps
-
-      - name: Run the scraper
+      - name: Install Playwright Browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+          
+      - name: Run Scraper
         run: python scraper.py
-        continue-on-error: false   # Fail the job if scraper crashes
+        env:
+          CI: true # Helps some browsers identify environment correctly
 
-      - name: Commit and push updated JSON files
+      - name: Commit and Push Changes
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
           git add docs/rev.json docs/deleted.json
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update reviews - $(date '+%Y-%m-%d %H:%M IST')"
-            git push
-          fi
-        continue-on-error: true
+          git diff --staged --quiet || git commit -m "🔄 Update Reviews $(date '+%Y-%m-%d %H:%M')"
+          git push
+        continue-on-error: false
