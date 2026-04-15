@@ -22,7 +22,7 @@ jobs:
           playwright install chromium --with-deps
 
       - name: Run Scraper
-        run: python scraper_playwright_hardened.py
+        run: python scraper.py
 
       - name: Commit and push updated JSON files
         run: |
