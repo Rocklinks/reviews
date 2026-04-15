@@ -1,4 +1,4 @@
-name: Sathya Reviews Scraper
+name: IR Scraper
 
 on:
   schedule:
@@ -25,18 +25,18 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # === Playwright Browser Caching (Added here) ===
+      # Playwright Browser Caching
       - name: Cache Playwright Browsers
         uses: actions/cache@v4
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}   # Change if you have package-lock.json
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      # Install system dependencies (needed for Ubuntu 24.04)
-      - name: Install System Dependencies for Playwright
+      # ←←← Critical Fix: Install t64 packages FIRST (before any playwright command)
+      - name: Install System Dependencies (Ubuntu 24.04+ compatible)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -65,8 +65,10 @@ jobs:
 
       - name: Install Playwright Browsers
         run: |
+          # Install browser only (do NOT let it install deps automatically)
           playwright install chromium
-          # Only run install-deps if cache was not hit (saves time)
+
+          # Run install-deps only if cache miss (and it should now succeed)
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
             playwright install-deps chromium
           fi
@@ -83,4 +85,3 @@ jobs:
           git add docs/rev.json docs/deleted.json
           git diff --staged --quiet || git commit -m "🔄 Update Reviews $(date '+%Y-%m-%d %H:%M')"
           git push
-        continue-on-error: false
