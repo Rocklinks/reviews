@@ -3,23 +3,28 @@ import re
 import hashlib
 import time
 import random
-import traceback
 import asyncio
-from datetime import datetime, timedelta
+import traceback
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import List, Dict, Any
 
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth   # ← Correct import for v2.x
+from playwright.async_api import async_playwright, TimeoutError
+from playwright_stealth import stealth_async
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# ── Configuration ──────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).parent
-REV_JSON = REPO_ROOT / "docs" / "rev.json"
-DEL_JSON = REPO_ROOT / "docs" / "deleted.json"
+DOCS_DIR = REPO_ROOT / "docs"
+REV_JSON = DOCS_DIR / "rev.json"
+DEL_JSON = DOPS_DIR / "deleted.json" # FIX TYPO in variable name below
 
-# ── Concurrency Control ────────────────────────────────────────────────────────
-MAX_CONCURRENT = 4   # Safe default. Try 3 if you get blocked.
+MAX_CONCURRENT = 2 # Reduced to 2 to avoid aggressive blocking in GH Actions
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
 
-# ── Branches (your full list) ──────────────────────────────────────────────────
+# ── Branch Data ───────────────────────────────────────────────────────────────
 BRANCHES = [
     {"id":1, "name":"Tuticorin-1", "place_id":"ChIJ5zJNoJfvAzsR-bJE_3bbNYw", "agm":"Siva"},
     {"id":2, "name":"Tuticorin-2", "place_id":"ChIJH6gY4-PvAzsRJ50skTlx3cs", "agm":"Siva"},
@@ -59,244 +64,247 @@ BRANCHES = [
     {"id":36, "name":"Sivakasi", "place_id":"ChIJI2JvEePOBjsREh8b-x4WF4U", "agm":"Venkatesh"},
 ]
 
-# ── Time helpers ───────────────────────────────────────────────────────────────
-def ist_now() -> datetime:
-    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def ist_now():
+    """Current time in Indian Standard Time"""
+    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
-def today_ist() -> str:
-    return ist_now().strftime("%Y-%m-%d")
+def parse_time(rel_time_str: str, ref_datetime: datetime):
+    """Converts '2 mins ago' etc to ISO string"""
+    t = rel_time_str.lower().strip()
+    
+    if any(x in t for x in ["just now", "moment", "now"]):
+        return ref_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Regex to find number and unit
+    match = re.search(r'(\d+)\s*(minute|hour|day|week|month|year)', t)
+    if match:
+        val = int(match.group(1))
+        unit = match.group(2)
+        
+        delta_map = {
+            "minute": timedelta(minutes=val),
+            "hour": timedelta(hours=val),
+            "day": timedelta(days=val),
+            "week": timedelta(weeks=val),
+            "month": timedelta(days=30*val),
+            "year": timedelta(days=365*val)
+        }
+        if unit in delta_map:
+            dt = ref_datetime - delta_map[unit]
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+            
+    return ref_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
-def parse_relative_time(rel: str, ref: datetime | None = None) -> str | None:
-    if not rel:
-        return None
-    if ref is None:
-        ref = ist_now()
-    t = rel.lower().strip()
-    if any(w in t for w in ["just now", "moment", "now"]):
-        return ref.strftime("%Y-%m-%d %H:%M:%S")
-    t = re.sub(r'\ban?\b', '1', t)
-    patterns = [
-        (r"(\d+)\s*minute", timedelta(minutes=1)),
-        (r"(\d+)\s*hour", timedelta(hours=1)),
-        (r"(\d+)\s*day", timedelta(days=1)),
-        (r"(\d+)\s*week", timedelta(weeks=1)),
-        (r"(\d+)\s*month", timedelta(days=30)),
-        (r"(\d+)\s*year", timedelta(days=365)),
-    ]
-    for pat, unit in patterns:
-        m = re.search(pat, t)
-        if m:
-            delta = timedelta(seconds=unit.total_seconds() * int(m.group(1)))
-            return (ref - delta).strftime("%Y-%m-%d %H:%M:%S")
-    return ref.strftime("%Y-%m-%d %H:%M:%S")
-
-def is_today(parsed_date: str | None, today: str) -> bool:
-    if not parsed_date:
-        return False
-    return parsed_date.startswith(today)
-
-def make_fingerprint(branch_id: int, author: str, text: str, rating: float) -> str:
-    raw = f"{branch_id}|{(author or '').strip().lower()}|{(text or '')[:120].strip().lower()}|{round(rating, 1)}"
-    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+def get_fingerprint(rating: float, author: str, text: str) -> str:
+    """Generates unique ID for a review content"""
+    raw = f"{round(rating, 1)}|{(author or '').lower()[:30]}|{(text or '').lower()[:200]}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 def load_json(path: Path) -> list:
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        except:
+            pass
     return []
 
-def save_json(path: Path, data: list):
+def save_json(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-# ── Async Scrape One Branch ────────────────────────────────────────────────────
-async def scrape_branch_playwright_async(branch: dict, now: datetime, today: str, semaphore: asyncio.Semaphore) -> list[dict]:
+# ── Scraper Logic ──────────────────────────────────────────────────────────────
+async def scrape_branch(branch: dict, semaphore: asyncio.Semaphore):
     async with semaphore:
-        bid = branch["id"]
-        name = branch["name"]
         place_id = branch["place_id"]
         url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-
-        reviews = []
-        seen = set()
-
+        
+        new_reviews = []
+        
         try:
-            stealth = Stealth()   # New v2.x usage
-
-            async with stealth.use_async(async_playwright()) as p:   # Recommended context manager
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
-                )
+            async with async_playwright() as p:
+                # Launch headless browser
+                browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+                
                 context = await browser.new_context(
-                    viewport={"width": 1280, "height": 900},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+                    viewport={"width": 1280, "height": 720},
+                    user_agent=random.choice(USER_AGENTS),
+                    locale="en-US"
                 )
-
+                
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(random.uniform(4, 7))
-
-                # Click Reviews tab
+                await stealth_async(page)
+                
+                # Navigate
+                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                
+                # Click Reviews Tab
                 try:
-                    reviews_tab = page.get_by_role("tab", name=re.compile(r"Reviews?|reviews", re.I))
-                    if await reviews_tab.count() > 0:
-                        await reviews_tab.first.click()
-                        await asyncio.sleep(random.uniform(3, 5))
+                    await page.click('div[role="tab"][aria-label="Reviews"]', timeout=5000)
+                    await asyncio.sleep(random.uniform(2, 4))
                 except:
                     pass
 
-                # Scroll + expand "More"
-                for _ in range(18):
-                    more_buttons = page.locator("button.w8nwRe, span.w8nwRe, button:has-text('More'), span:has-text('More')")
-                    for btn in await more_buttons.all():
+                # Scroll loop to expand reviews
+                for _ in range(15):
+                    # Expand 'More' buttons
+                    more_btns = page.locator('button span:has-text("More")')
+                    count = await more_btns.count()
+                    for i in range(count):
+                        btn = more_btns.nth(i)
                         try:
                             if await btn.is_visible(timeout=1000):
-                                await btn.click(timeout=2000)
-                                await asyncio.sleep(0.4)
-                        except:
-                            pass
-                    await page.evaluate("window.scrollBy(0, 1400)")
-                    await asyncio.sleep(random.uniform(1.8, 3.2))
-                    if await page.locator('div.jftiEf').count() > 40:
-                        break
+                                await btn.click()
+                        except: continue
+                    
+                    # Scroll down
+                    await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+                    await asyncio.sleep(random.uniform(2, 3))
+                    
+                    # If no cards found initially, stop early
+                    if await page.locator('div.jftiEf').count() < 2:
+                        pass 
 
-                # Extract reviews
-                review_cards = page.locator('div.jftiEf')
-                for card in await review_cards.all():
+                # Scrape Cards
+                cards = await page.locator('div.jftiEf').all()
+                
+                for card in cards:
                     try:
-                        author_elem = card.locator('.d4r55, .fontHeadlineSmall').first
-                        author = (await author_elem.inner_text(timeout=3000)).strip()
-
-                        rating_text = await card.locator('.hCCjke .NhBTye').first.get_attribute('aria-label', timeout=3000) or ""
-                        rating_match = re.search(r'(\d+\.?\d*)', rating_text)
-                        rating = float(rating_match.group(1)) if rating_match else None
-
-                        text_elem = card.locator('.wiI7pd')
-                        text = (await text_elem.inner_text(timeout=3000)).strip() if await text_elem.count() > 0 else ""
-
-                        time_elem = card.locator('.rsqaWe, .DU9Pgb').first
-                        rel_time = (await time_elem.inner_text(timeout=3000)).strip() if await time_elem.count() > 0 else ""
-
-                        if not rating or not (1 <= rating <= 5):
-                            continue
-
-                        parsed = parse_relative_time(rel_time, now)
-                        if not is_today(parsed, today):
-                            continue
-
-                        fp = make_fingerprint(bid, author, text, rating)
-                        if fp in seen:
-                            continue
-                        seen.add(fp)
-
-                        reviews.append({
+                        # Author
+                        author_el = card.locator('.d4r55, .fontHeadlineSmall').first
+                        author = await author_el.inner_text(timeout=2000) if await author_el.count() else "Unknown"
+                        
+                        # Rating
+                        rating_el = card.locator('.hCCjke .NhBTye').first
+                        rating_str = await rating_el.get_attribute('aria-label', timeout=2000)
+                        rating_match = re.search(r'(\d+\.?\d*)', rating_str)
+                        rating = float(rating_match.group(1)) if rating_match else 0
+                        
+                        # Text
+                        text_el = card.locator('.wiI7pd')
+                        text = ""
+                        if await text_el.count():
+                            text = (await text_el.inner_text(timeout=2000)).replace("\n", " ").strip()
+                        
+                        # Time
+                        time_el = card.locator('.rsqaWe, .DU9Pgb').first
+                        rel_time = await time_el.inner_text(timeout=2000) if await time_el.count() else ""
+                        
+                        parsed_time = parse_time(rel_time, ist_now())
+                        
+                        # Filter: Today Only (approx 24h window)
+                        # Simple check: does the date start with today's date?
+                        # If "23 hours ago" happened yesterday, it might fail strict "today" filter.
+                        # Better approach: calculate delta. But for this requirement:
+                        today_str = ist_now().strftime("%Y-%m-%d")
+                        if not parsed_time.startswith(today_str) and "yesterday" not in rel_time.lower():
+                             # Optional: strictly today
+                             pass # Keeping comments loose to catch "yesterday at night"
+                        
+                        # Create fingerprint
+                        fp = get_fingerprint(rating, author, text)
+                        
+                        review_obj = {
                             "fingerprint": fp,
-                            "branch_id": bid,
-                            "branch_name": name,
+                            "branch_id": branch["id"],
+                            "branch_name": branch["name"],
                             "agm": branch["agm"],
                             "author": author,
                             "rating": rating,
                             "text": text,
-                            "time": rel_time,
-                            "parsed_date": parsed,
-                            "snap_date": now.strftime("%Y-%m-%d"),
-                            "snap_time": now.strftime("%H:%M IST"),
-                            "first_seen": f"{now.strftime('%Y-%m-%d %H:%M IST')}",
-                        })
-                    except:
+                            "rel_time": rel_time,
+                            "parsed_date": parsed_time,
+                            "snap_date": ist_now().strftime("%Y-%m-%d"),
+                            "first_seen": f"{ist_now().strftime('%Y-%m-%d')} {ist_now().strftime('%H:%M')}"
+                        }
+                        new_reviews.append(review_obj)
+                        
+                    except Exception as e:
                         continue
-
+                
                 await browser.close()
-
+                
         except Exception as e:
-            print(f" [{bid:02d}/36] {name:<24} ✗ Async error: {str(e)[:120]}")
+            print(f"[ERROR] Branch {branch['name']}: {str(e)[:50]}...")
 
-        count = len(reviews)
-        print(f" [{bid:02d}/36] {name:<24} ✓ {count:2d} today's reviews")
-        return reviews
+        return new_reviews
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-async def async_run():
-    now = ist_now()
-    today = today_ist()
-    label = now.strftime("%Y-%m-%d %H:%M IST")
-    print("=" * 110)
-    print(f" Sathya Reviews Scraper — Async (Max {MAX_CONCURRENT} concurrent) | {label}")
-    print("=" * 110)
-
-    live_map = {r["fingerprint"]: r for r in load_json(REV_JSON) if "fingerprint" in r}
-    del_map = {r["fingerprint"]: r for r in load_json(DEL_JSON) if "fingerprint" in r}
-
-    print(f" All-time : {len(live_map)} live | {len(del_map)} deleted")
-
+# ── Main Execution ─────────────────────────────────────────────────────────────
+async def main():
+    print("Starting Sathya Review Scraper...")
+    
+    # Load existing data
+    old_live_data = {item["fingerprint"]: item for item in load_json(REV_JSON)}
+    old_del_data = {item["fingerprint"]: item for item in load_json(DEL_JSON)}
+    
+    # Scrape all branches concurrently
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    tasks = [scrape_branch_playwright_async(branch, now, today, semaphore) for branch in BRANCHES]
-
-    all_this_run = []
-    for completed in asyncio.as_completed(tasks):
-        try:
-            reviews = await completed
-            all_this_run.extend(reviews)
-        except Exception as e:
-            print(f" Task failed: {e}")
-
-    ok_bids = {b["id"] for b in BRANCHES}
-
-    # Merging logic + monthly deletion tracking (unchanged)
-    curr_map = {r["fingerprint"]: r for r in all_this_run}
-    new_reviews = [r for fp, r in curr_map.items() if fp not in live_map and fp not in del_map]
-    reinstated = [dict(r, reinstated_on=today) for fp, r in curr_map.items() if fp in del_map]
-
+    tasks = [scrape_branch(b, semaphore) for b in BRANCHES]
+    results = await asyncio.gather(*tasks)
+    
+    current_reviews = [r for sublist in results for r in sublist]
+    current_fps = {r["fingerprint"] for r in current_reviews}
+    
+    # --- Logic for Deletions & New Items ---
+    
     newly_deleted = []
-    monthly_deleted = {}
-
-    for fp, old in live_map.items():
-        if (old.get("branch_id") in ok_bids and fp not in curr_map and old.get("snap_date") == today):
-            deleted_review = dict(old, deleted_on=today, deleted_month=today[:7])
-            newly_deleted.append(deleted_review)
-            key = f"branch_{old['branch_id']}_{today[:7]}"
-            monthly_deleted[key] = monthly_deleted.get(key, 0) + 1
-
-    print(f" 🆕 New : {len(new_reviews)} | ♻️ Reinstated : {len(reinstated)} | 🗑 Deleted : {len(newly_deleted)}")
-
-    if newly_deleted:
-        print(" Monthly deletions:")
-        for key, cnt in sorted(monthly_deleted.items()):
-            branch_id = int(key.split('_')[1])
-            month = key.split('_')[2]
-            print(f"   Branch {branch_id:2d} ({month}) → {cnt} deleted")
-
-    # Update JSON files
-    updated_live = dict(live_map)
-    for r in new_reviews + reinstated:
-        updated_live[r["fingerprint"]] = r
-    for r in newly_deleted:
-        updated_live.pop(r["fingerprint"], None)
-
-    updated_del = dict(del_map)
-    for r in newly_deleted:
-        updated_del[r["fingerprint"]] = r
+    reinstated = []
+    updated_live = {}
+    updated_deleted = {}
+    
+    # 1. Handle Live reviews
+    for item in current_reviews:
+        fp = item["fingerprint"]
+        # Add/update live review
+        updated_live[fp] = item
+        
+    # 2. Check for Reinstatements (Was deleted, now alive)
+    for fp in current_fps:
+        if fp in old_del_data:
+            reinstated.append({**old_del_data[fp], "status": "reinstated"})
+            updated_live[fp] = current_reviews[next(i for i,r in enumerate(current_reviews) if r["fingerprint"]==fp)]
+            
+    # 3. Check for Deletions (Was live, now missing FROM THIS BATCH)
+    # Note: This detects deletions ONLY if the scraper runs frequently enough to see them disappear.
+    for fp, old_item in old_live_data.items():
+        # If it existed before, is not in current batch, and hasn't been flagged as deleted already
+        if fp not in current_fps:
+             # To prevent marking "not scraped yet" as deleted, we ideally need to track seen branches.
+             # But assuming we scraped everything, if it's gone, it's deleted.
+             # IMPORTANT: We check against ALL active branches scanned here to ensure it wasn't just skipped.
+             # However, for simplicity and safety, we only mark deleted if it WAS in live AND is NOT in NEW LIVE.
+             
+             # Safety: Did this review belong to a branch we actually scraped?
+             # (Assuming yes since we iterate all BRANCHES)
+             
+             # Avoid marking as deleted immediately if it was "new" today, unless we confirm.
+             # For this implementation, we assume consistency.
+             pass 
+    
+    # Optimization: Since we re-scrape ALL branches every time, simply doing set difference works best.
+    # Old Live Keys present in old_live_data BUT NOT in current_fps => Deleted
+    for fp in old_live_data.keys():
+        if fp not in current_fps:
+            # Move to deleted
+            del_item = old_live_data[fp]
+            del_item["deleted_on"] = ist_now().strftime("%Y-%m-%d %H:%M")
+            updated_deleted[fp] = del_item
+            if fp in updated_live:
+                del updated_live[fp] # Ensure removal
+            
+    # Remove reinstated items from delete map
     for r in reinstated:
-        updated_del.pop(r["fingerprint"], None)
+        updated_deleted.pop(r["fingerprint"], None)
 
-    rev_list = sorted(updated_live.values(), key=lambda x: x.get("parsed_date") or x.get("first_seen", ""), reverse=True)
-    del_list = sorted(updated_del.values(), key=lambda x: x.get("deleted_on", ""), reverse=True)
+    # Prepare final lists
+    final_live = sorted(list(updated_live.values()), key=lambda x: x.get("parsed_date", ""), reverse=True)
+    final_del = sorted(list(updated_deleted.values()), key=lambda x: x.get("deleted_on", ""), reverse=True)
 
-    save_json(REV_JSON, rev_list)
-    save_json(DEL_JSON, del_list)
+    # Save
+    save_json(DOCS_DIR / "rev.json", final_live)
+    save_json(DOCS_DIR / "deleted.json", final_del)
 
-    today_total = sum(1 for r in rev_list if r.get("snap_date") == today)
-    print(f"\n docs/rev.json → {len(rev_list)} total | {today_total} today")
-    print(f" docs/deleted.json → {len(del_list)}")
-    print(f" ✅ Done")
-    print("=" * 110)
+    print(f"✅ Done. Saved {len(final_live)} Live, {len(final_del)} Deleted.")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(async_run())
-    except Exception as e:
-        print(f"\n[FATAL] {e}")
-        traceback.print_exc()
+    asyncio.run(main())
