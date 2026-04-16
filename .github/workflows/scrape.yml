@@ -1,17 +1,15 @@
 name: Sathya Reviews Scraper
-
 on:
   schedule:
-    - cron: '30 0 * * *'   # 6:00 AM IST
-    - cron: '30 6 * * *'   # 12:00 PM IST
-    - cron: '30 12 * * *'  # 6:00 PM IST
-    - cron: '30 18 * * *'  # 12:00 AM IST (next day)
+    - cron: '30 0 * * *' # 6:00 AM IST
+    - cron: '30 6 * * *' # 12:00 PM IST
+    - cron: '30 12 * * *' # 6:00 PM IST
+    - cron: '30 18 * * *' # 12:00 AM IST (next day)
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -35,13 +33,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      # ←←← Critical Fix: Install t64 packages FIRST (before any playwright command)
+      # ←←← Even More Defensive: Comprehensive t64 packages for Ubuntu 24.04+
       - name: Install System Dependencies (Ubuntu 24.04+ compatible)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libasound2t64 \
-            libatk-bridge2.0-0 \
+            libatk-bridge2.0-0t64 \
             libatk1.0-0t64 \
             libatspi2.0-0t64 \
             libcups2t64 \
@@ -60,17 +58,26 @@ jobs:
             libxshmfence1 \
             libxss1 \
             libxtst6 \
+            libcairo2 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            libglib2.0-0t64 \
+            libxcb1 \
+            libx11-6 \
             fonts-liberation \
             fonts-noto-color-emoji
 
       - name: Install Playwright Browsers
         run: |
-          # Install browser only (do NOT let it install deps automatically)
+          # Install browser only (do NOT let it install deps automatically on every run)
           playwright install chromium
-
-          # Run install-deps only if cache miss (and it should now succeed)
+          
+          # Run install-deps only if cache miss (more defensive approach)
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Cache miss detected - installing system dependencies via playwright..."
             playwright install-deps chromium
+          else
+            echo "Cache hit - skipping playwright install-deps"
           fi
 
       - name: Run Scraper
