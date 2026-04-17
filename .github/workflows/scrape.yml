@@ -16,7 +16,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Important for proper git diff and commit
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,11 +26,10 @@ jobs:
       - name: Install Python Dependencies
         run: pip install -r requirements.txt
 
-      - name: Install system dependencies for Chromium/Playwright
+      - name: Install system dependencies for Chromium (Ubuntu 24.04 compatible)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
-            chromium-browser \
             libnss3 \
             libatk-bridge2.0-0 \
             libdrm2 \
@@ -42,12 +41,14 @@ jobs:
             libasound2t64 \
             libpango-1.0-0 \
             libcairo2 \
-            libcups2 || true
+            libcups2 \
+            libxss1 \
+            libgtk-3-0 || true
 
-      - name: Install Playwright and browsers
+      - name: Install Playwright
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium
+          python -m playwright install chromium
 
       - name: Run Scraper
         run: python scraper.py
@@ -61,7 +62,6 @@ jobs:
           
           git add docs/rev.json docs/deleted.json
           
-          # Only commit if there are actual changes
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
