@@ -34,7 +34,7 @@ jobs:
             ${{ runner.os }}-playwright-
 
       # ←←← Even More Defensive: Comprehensive t64 packages for Ubuntu 24.04+
-      - name: Install System Dependencies (Ubuntu 24.04+ compatible)
+      - name: Install System Dependencies for Playwright (Ubuntu 24.04)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -65,20 +65,13 @@ jobs:
             libxcb1 \
             libx11-6 \
             fonts-liberation \
-            fonts-noto-color-emoji
+            fonts-noto-color-emoji \
+            libxcursor1 \
+            libxi6
 
       - name: Install Playwright Browsers
         run: |
-          # Install browser only (do NOT let it install deps automatically on every run)
-          playwright install chromium
-          
-          # Run install-deps only if cache miss (more defensive approach)
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-            echo "Cache miss detected - installing system dependencies via playwright..."
-            playwright install-deps chromium
-          else
-            echo "Cache hit - skipping playwright install-deps"
-          fi
+          playwright install chromium --with-deps     
 
       - name: Run Scraper
         run: python scraper.py
