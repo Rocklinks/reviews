@@ -8,6 +8,10 @@ on:
     - cron: '30 18 * * *'  # 12:00 AM IST (next day)
   workflow_dispatch:
 
+# Explicit permissions for the GITHUB_TOKEN
+permissions:
+  contents: write   # Required to push changes
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -26,7 +30,7 @@ jobs:
       - name: Install Python Dependencies
         run: pip install -r requirements.txt
 
-      - name: Install system dependencies for Chromium (Ubuntu 24.04 compatible)
+      - name: Install system dependencies for Chromium
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
