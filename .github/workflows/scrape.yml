@@ -1,20 +1,18 @@
-name: Sathya Reviews Scraper
-
+name: SR Scraper
 on:
   schedule:
     - cron: '30 0 * * *'   # 06:00 IST
     - cron: '30 6 * * *'   # 12:00 IST
     - cron: '30 12 * * *'  # 18:00 IST
-    - cron: '30 18 * * *'  # 00:00 IST (next day)
+    - cron: '30 18 * * *'  # 00:00 IST (midnight slot → snap_date = yesterday)
   workflow_dispatch:
-
 jobs:
   scrape:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
@@ -22,45 +20,56 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
-        run: |
-          pip install --no-cache-dir -r requirements.txt
+      - name: Install Python deps
+        run: pip install playwright==1.44.0
 
-      # ── Cache Playwright browsers for faster runs ───────────────────────────
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-chromium-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-chromium-
+          key: ${{ runner.os }}-playwright-chromium-1.44.0
+          restore-keys: ${{ runner.os }}-playwright-chromium-
 
-      # ── Install Chromium browser + all its system dependencies ──────────────
-      - name: Install Playwright Chromium with dependencies
+      # Install ALL Ubuntu 24.04 system libs manually (avoids playwright install-deps conflict)
+      - name: Install system dependencies
         run: |
-          playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+            libcups2t64 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0t64 \
+            libnspr4 libnss3 libxcomposite1 libxdamage1 libxext6 \
+            libxfixes3 libxkbcommon0 libxrandr2 libxshmfence1 libxss1 libxtst6 \
+            libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libglib2.0-0t64 \
+            libxcb1 libx11-6 fonts-liberation fonts-noto-color-emoji \
+            libegl1 libgl1 libgles2
 
-      # ── Run the scraper ─────────────────────────────────────────────────────
+      # Install ONLY the browser binary — NO install-deps (avoids libasound2 conflict)
+      - name: Install Playwright Chromium
+        run: playwright install chromium
+
       - name: Run scraper
         run: python scraper.py
         env:
           CI: true
-          # Force English locale so "Reviews" tab text is consistent
           LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
 
-      # ── Commit and push updated files ───────────────────────────────────────
-      - name: Commit and push changes
+      # Upload debug folder so you can inspect screenshots + DOM dumps
+      - name: Upload debug artifacts
+        if: always()   # upload even if scraper fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_number }}
+          path: debug/
+          retention-days: 7
+
+      - name: Commit and push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
           git add docs/rev.json docs/deleted.json
-          
-          # Only commit if there are actual changes
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "🔄 Reviews $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git diff --staged --quiet || (
+            git commit -m "🔄 Reviews $(date -u '+%Y-%m-%d %H:%M UTC')" &&
             git push
-          fi
+          )
