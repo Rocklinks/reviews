@@ -1,11 +1,11 @@
-name: Sathya Reviews Scraper
+name: IR Scraper
 
 on:
   schedule:
     - cron: '30 0 * * *'   # 06:00 IST
     - cron: '30 6 * * *'   # 12:00 IST
     - cron: '30 12 * * *'  # 18:00 IST
-    - cron: '30 18 * * *'  # 00:00 IST (next day → midnight slot)
+    - cron: '30 18 * * *'  # 00:00 IST (next day)
   workflow_dispatch:
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
           key: ${{ runner.os }}-playwright-chromium-${{ hashFiles('requirements.txt') }}
           restore-keys: ${{ runner.os }}-playwright-chromium-
 
-      # ── System deps (Ubuntu 24.04 t64 package names) ─────────────────────────
+      # ── System deps for Ubuntu 24.04 (t64 packages) ─────────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -44,12 +44,14 @@ jobs:
             libnspr4 libnss3 libxcomposite1 libxdamage1 libxext6 \
             libxfixes3 libxkbcommon0 libxrandr2 libxshmfence1 libxss1 libxtst6 \
             libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libglib2.0-0t64 \
-            libxcb1 libx11-6 fonts-liberation fonts-noto-color-emoji
+            libxcb1 libx11-6 fonts-liberation fonts-noto-color-emoji \
+            libxcursor1 libxi6 libxrender1 libxtst6
 
-      # ── Install Chromium browser ─────────────────────────────────────────────
+      # ── Install Chromium + dependencies ─────────────────────────────────────
       - name: Install Playwright Chromium
         run: |
           playwright install chromium
+          # Only run install-deps if cache was not hit (to avoid redundant work)
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
             playwright install-deps chromium
           fi
@@ -59,7 +61,6 @@ jobs:
         run: python scraper.py
         env:
           CI: true
-          # Forces consistent locale so "Reviews" tab text matches English
           LANG: en_US.UTF-8
 
       # ── Commit & push ────────────────────────────────────────────────────────
