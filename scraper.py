@@ -1,37 +1,35 @@
 """
-scraper.py – Sathya Review Scraper (definitive production build)
+scraper.py  –  Sathya Review Scraper  (self-debugging production build)
 
-ROOT CAUSE FIX
-==============
-Previous versions failed because:
-1. wait_until="domcontentloaded" fires BEFORE Maps JS boots → empty page
-2. The search URL doesn't auto-open the sidebar in headless Chrome
-3. Tab selectors were wrong — Maps renders tabs as <div role="tab"> inside
-   a specific parent, AND the aria-label is locale-dependent
+SELF-DEBUG SYSTEM
+=================
+Every branch scrape saves:
+  debug/screenshots/<branch>_01_loaded.png
+  debug/screenshots/<branch>_02_after_tab.png
+  debug/screenshots/<branch>_03_after_sort.png
+  debug/screenshots/<branch>_04_after_scroll.png
+  debug/dom_dumps/<branch>.txt   (all selectors + their counts)
 
-CORRECT STRATEGY
-================
-1. Navigate to the DIRECT place URL (maps/place/?q=place_id:XXX)
-   with wait_until="load" + explicit wait for the JS app to mount
-2. Wait for the place name heading to confirm the sidebar is loaded
-3. Find the Reviews tab by scanning ALL div[role="tab"] elements and
-   matching text content (not aria-label, which is locale-dependent)
-4. Sort by Newest, then scroll the inner panel div
-5. Parse cards using multiple selector fallbacks
+This tells you EXACTLY what the browser sees at every step in GH Actions.
+Upload the debug/ folder as an artifact in scrape.yml to inspect it.
 
-RUN SLOTS (UTC → IST)
-=====================
-  00:30 UTC → 06:00 IST  morning   snap_date = today
-  06:30 UTC → 12:00 IST  noon      snap_date = today
-  12:30 UTC → 18:00 IST  evening   snap_date = today
-  18:30 UTC → 00:00 IST  midnight  snap_date = YESTERDAY
+ARCHITECTURE
+============
+• Uses place_id URL with hl=en to force English UI
+• Waits for real DOM elements before acting (not just time.sleep)
+• Tab click: tries 8 different strategies including JS click
+• Scroll: scrolls the inner feed div via JS evaluate
+• Selector cascade: 6+ fallbacks for every field
+• Self-heals: if 0 cards found, dumps DOM and retries with longer waits
 """
 
 import asyncio
 import hashlib
 import json
+import os
 import random
 import re
+import sys
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,58 +37,57 @@ from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-DOCS_DIR = Path(__file__).parent / "docs"
-REV_JSON  = DOCS_DIR / "rev.json"
-DEL_JSON  = DOCS_DIR / "deleted.json"
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
+ROOT        = Path(__file__).parent
+DOCS_DIR    = ROOT / "docs"
+DEBUG_DIR   = ROOT / "debug"
+SS_DIR      = DEBUG_DIR / "screenshots"
+DOM_DIR     = DEBUG_DIR / "dom_dumps"
+REV_JSON    = DOCS_DIR / "rev.json"
+DEL_JSON    = DOCS_DIR / "deleted.json"
+
+for d in [DOCS_DIR, SS_DIR, DOM_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 MAX_CONCURRENT    = 2
-MAX_RETRIES       = 2
+MAX_RETRIES       = 3
 MAX_SCROLL_ROUNDS = 40
-STALE_LIMIT       = 4    # stop scrolling after N rounds with no new cards
+STALE_LIMIT       = 4
 DELETION_DAYS     = 30
-
-IST = timezone(timedelta(hours=5, minutes=30))
+IST               = timezone(timedelta(hours=5, minutes=30))
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 
 CHROMIUM_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
+    "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-blink-features=AutomationControlled",
-    "--disable-infobars",
-    "--disable-extensions",
-    "--disable-dev-shm-usage",
-    "--no-first-run",
-    "--disable-default-apps",
-    "--mute-audio",
-    "--disable-translate",
-    "--disable-sync",
+    "--disable-dev-shm-usage", "--disable-extensions",
+    "--disable-infobars", "--no-first-run",
+    "--disable-default-apps", "--mute-audio",
+    "--disable-translate", "--disable-sync",
     "--disable-background-networking",
-    "--disable-client-side-phishing-detection",
     "--disable-hang-monitor",
-    "--disable-prompt-on-repost",
-    "--window-size=1280,800",
+    "--window-size=1400,900",
+    # Very important: don't use GPU in CI
+    "--disable-gpu", "--disable-software-rasterizer",
 ]
 
 STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'plugins',   {get: () => [1,2,3,4,5]});
 Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-window.chrome = {runtime: {}};
+window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
 try {
     const orig = window.navigator.permissions.query;
     window.navigator.permissions.query = p =>
         p.name === 'notifications'
             ? Promise.resolve({state: Notification.permission})
             : orig(p);
-} catch(_) {}
+} catch(e) {}
 """
 
 BRANCHES = [
@@ -134,7 +131,7 @@ BRANCHES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Pure helpers
+# Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
 def ist_now() -> datetime:
@@ -167,17 +164,16 @@ def make_fp(rating: float, author: str, text: str) -> str:
 
 def load_json(path: Path) -> list:
     if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        try: return json.loads(path.read_text(encoding="utf-8"))
+        except: return []
     return []
 
 def save_json(path: Path, data: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-# ── Relative-time helpers ──────────────────────────────────────────────────────
+def slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 _WITHIN_23H = re.compile(
     r"^(?:just now|a moment ago|moments? ago)$"
@@ -188,14 +184,11 @@ _WITHIN_23H = re.compile(
 def is_within_23h(rel: str) -> bool:
     rel = (rel or "").strip()
     m = _WITHIN_23H.match(rel)
-    if not m:
-        return False
-    if not m.group(1):
-        return True   # "just now" family
-    val  = int(m.group(1))
-    unit = m.group(2).lower()
+    if not m: return False
+    if not m.group(1): return True
+    val, unit = int(m.group(1)), m.group(2).lower()
     if unit == "second": return True
-    if unit == "minute": return val <= 1380   # 23 * 60
+    if unit == "minute": return val <= 1380
     if unit == "hour":   return val <= 23
     return False
 
@@ -204,27 +197,117 @@ def rel_to_abs(rel: str, ref: datetime) -> str:
     if not rel or "just now" in rel or "moment" in rel:
         return ref.strftime("%Y-%m-%d %H:%M:%S")
     m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month|year)", rel)
-    if not m:
-        return ref.strftime("%Y-%m-%d %H:%M:%S")
+    if not m: return ref.strftime("%Y-%m-%d %H:%M:%S")
     val, unit = int(m.group(1)), m.group(2)
     d = {"second": timedelta(seconds=val), "minute": timedelta(minutes=val),
-         "hour": timedelta(hours=val), "day": timedelta(days=val),
-         "week": timedelta(weeks=val), "month": timedelta(days=30*val),
-         "year": timedelta(days=365*val)}
+         "hour":   timedelta(hours=val),   "day":    timedelta(days=val),
+         "week":   timedelta(weeks=val),   "month":  timedelta(days=30*val),
+         "year":   timedelta(days=365*val)}
     return (ref - d.get(unit, timedelta())).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Browser helpers
+# Self-debug: DOM dump
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def dump_dom(page, branch_name: str, label: str):
+    """Save a full selector inventory + screenshot for debugging."""
+    sl = slug(branch_name)
+    safe_label = re.sub(r"[^a-z0-9]+", "_", label.lower())
+
+    # Screenshot
+    try:
+        await page.screenshot(
+            path=str(SS_DIR / f"{sl}_{safe_label}.png"),
+            full_page=False
+        )
+    except Exception:
+        pass
+
+    # DOM inventory
+    lines = [f"=== DOM DUMP: {branch_name} | {label} ===",
+             f"URL: {page.url}", f"Title: {await page.title()}", ""]
+
+    check_sels = [
+        "button", "div[role='tab']", "div[role='main']",
+        "div[role='feed']", "h1", "h2",
+        "div.jftiEf",           # review cards
+        ".rsqaWe", ".DU9Pgb",  # timestamps
+        "div.m6QErb",           # scroll container
+        "div.m6QErb.DxyBCb",
+        "span.F7nice",          # review count
+        ".fontHeadlineSmall",   # reviewer names
+        ".wiI7pd",              # review text
+        "span[role='img'][aria-label]",  # stars
+        ".kvMYJc",
+        "[aria-label*='review' i]",
+        "[aria-label*='star' i]",
+        "button.w8nwRe",        # "more" button
+        "div.section-scrollbox",
+    ]
+
+    lines.append("--- Element counts ---")
+    for sel in check_sels:
+        try:
+            n = await page.locator(sel).count()
+            if n > 0:
+                lines.append(f"  {n:4d}  {sel}")
+        except:
+            pass
+
+    # All buttons text
+    lines.append("\n--- All buttons ---")
+    try:
+        btns = await page.locator("button").all()
+        for b in btns[:30]:
+            try:
+                txt = (await b.inner_text(timeout=400)).strip().replace("\n", " ")[:80]
+                lbl = (await b.get_attribute("aria-label", timeout=400) or "")[:80]
+                jsn = (await b.get_attribute("jsaction", timeout=400) or "")[:60]
+                lines.append(f"  txt={txt!r:50s}  aria={lbl!r:40s}  jsaction={jsn!r}")
+            except:
+                pass
+    except:
+        pass
+
+    # All tabs
+    lines.append("\n--- All [role=tab] ---")
+    try:
+        tabs = await page.locator("[role='tab']").all()
+        for t in tabs:
+            try:
+                txt = (await t.inner_text(timeout=400)).strip().replace("\n", " ")[:80]
+                lbl = (await t.get_attribute("aria-label", timeout=400) or "")[:80]
+                lines.append(f"  txt={txt!r:50s}  aria={lbl!r}")
+            except:
+                pass
+    except:
+        pass
+
+    # First 3 review cards if any
+    lines.append("\n--- Review cards sample ---")
+    try:
+        cards = await page.locator("div.jftiEf").all()
+        for card in cards[:3]:
+            try:
+                inner = (await card.inner_text(timeout=500)).replace("\n", " ")[:200]
+                lines.append(f"  CARD: {inner!r}")
+            except:
+                pass
+    except:
+        pass
+
+    dump_path = DOM_DIR / f"{sl}_{safe_label}.txt"
+    dump_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Browser setup
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def make_context(browser):
     ctx = await browser.new_context(
-        viewport=random.choice([
-            {"width": 1280, "height": 800},
-            {"width": 1366, "height": 768},
-            {"width": 1440, "height": 900},
-        ]),
+        viewport={"width": 1400, "height": 900},
         user_agent=random.choice(USER_AGENTS),
         locale="en-US",
         timezone_id="Asia/Kolkata",
@@ -232,177 +315,368 @@ async def make_context(browser):
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
     )
     await ctx.add_init_script(STEALTH_JS)
     return ctx
 
-async def try_click(page, selectors: list[str], timeout=4000) -> bool:
-    """Try a list of selectors, click the first visible one. Returns True on success."""
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=timeout):
-                await loc.click()
-                return True
-        except Exception:
-            continue
-    return False
 
-async def get_text(locator, timeout=2000) -> str:
-    try:
-        if await locator.count():
-            return (await locator.first.inner_text(timeout=timeout)).strip()
-    except Exception:
-        pass
-    return ""
-
-async def get_attr(locator, attr: str, timeout=2000) -> str:
-    try:
-        if await locator.count():
-            v = await locator.first.get_attribute(attr, timeout=timeout)
-            return (v or "").strip()
-    except Exception:
-        pass
-    return ""
+async def wait_for_any(page, selectors: list[str], timeout: int = 15000) -> str | None:
+    """Wait until any of the selectors appears. Returns the matched selector."""
+    deadline = asyncio.get_event_loop().time() + timeout / 1000
+    while asyncio.get_event_loop().time() < deadline:
+        for sel in selectors:
+            try:
+                if await page.locator(sel).count() > 0:
+                    return sel
+            except:
+                pass
+        await asyncio.sleep(0.5)
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KEY FIX: Find the Reviews tab by scanning tab text content
+# Tab click: 10 strategies
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def click_reviews_tab(page) -> bool:
-    """
-    Google Maps renders navigation tabs as div[role='tab'].
-    The aria-label is unreliable across locales.
-    Instead, scan ALL tabs and match by text content containing 'review'.
-    """
-    # Strategy 1: text-content match on all tabs
+    """Try every known strategy to click the Reviews tab."""
+
+    # S1: div[role=tab] with text containing "review" (case-insensitive)
     try:
-        tabs = await page.locator('div[role="tab"], button[role="tab"]').all()
+        tabs = await page.locator("div[role='tab']").all()
         for tab in tabs:
             try:
-                text = (await tab.inner_text(timeout=1000)).strip().lower()
-                if "review" in text:
+                txt = (await tab.inner_text(timeout=500)).lower()
+                if "review" in txt:
                     await tab.click()
+                    print("      → Tab clicked via S1 (role=tab text match)")
                     return True
-            except Exception:
+            except:
                 continue
-    except Exception:
+    except:
         pass
 
-    # Strategy 2: aria-label contains "review" (case-insensitive)
+    # S2: button[role=tab] text match
     try:
-        loc = page.locator('[role="tab"][aria-label*="review" i], [role="tab"][aria-label*="Review"]').first
+        tabs = await page.locator("button[role='tab']").all()
+        for tab in tabs:
+            try:
+                txt = (await tab.inner_text(timeout=500)).lower()
+                if "review" in txt:
+                    await tab.click()
+                    print("      → Tab clicked via S2 (button role=tab text match)")
+                    return True
+            except:
+                continue
+    except:
+        pass
+
+    # S3: aria-label contains "review"
+    try:
+        loc = page.locator("[aria-label*='review' i]").first
         if await loc.is_visible(timeout=3000):
             await loc.click()
+            print("      → Tab clicked via S3 (aria-label contains review)")
             return True
-    except Exception:
+    except:
         pass
 
-    # Strategy 3: button with text "Reviews" anywhere
+    # S4: Any element whose text is exactly "Reviews"
     try:
-        loc = page.locator('button').filter(has_text=re.compile(r"^Reviews$", re.I)).first
+        loc = page.get_by_text("Reviews", exact=True).first
         if await loc.is_visible(timeout=3000):
             await loc.click()
+            print("      → Tab clicked via S4 (get_by_text exact)")
             return True
-    except Exception:
+    except:
         pass
 
-    # Strategy 4: any element with aria-label exactly matching review count pattern
-    # Google often renders it as "123 reviews"
+    # S5: Any element whose text contains "Reviews" and is tab-like
     try:
-        loc = page.locator('[aria-label*="reviews" i]').first
-        if await loc.is_visible(timeout=3000):
-            await loc.click()
-            return True
-    except Exception:
+        for sel in ["button", "div", "span", "li"]:
+            els = await page.locator(sel).all()
+            for el in els[:50]:
+                try:
+                    txt = (await el.inner_text(timeout=200)).strip()
+                    if re.match(r"^Reviews?(\s*\(\d+\))?$", txt, re.I):
+                        await el.click()
+                        print(f"      → Tab clicked via S5 ({sel} text={txt!r})")
+                        return True
+                except:
+                    continue
+    except:
         pass
 
+    # S6: JS click on the first element with "Review" in innerText
+    try:
+        result = await page.evaluate("""
+            () => {
+                const all = document.querySelectorAll('[role="tab"], button, div.Gpq6kf');
+                for (const el of all) {
+                    if (el.innerText && el.innerText.toLowerCase().includes('review')) {
+                        el.click();
+                        return el.innerText;
+                    }
+                }
+                return null;
+            }
+        """)
+        if result:
+            print(f"      → Tab clicked via S6 (JS evaluate, text={result.strip()!r})")
+            return True
+    except:
+        pass
+
+    # S7: Click the review count span (F7nice contains "X reviews")
+    try:
+        spans = await page.locator("span.F7nice, div.F7nice").all()
+        for sp in spans:
+            try:
+                txt = (await sp.inner_text(timeout=300)).lower()
+                if "review" in txt:
+                    await sp.click()
+                    print(f"      → Tab clicked via S7 (F7nice span {txt!r})")
+                    return True
+            except:
+                continue
+    except:
+        pass
+
+    # S8: Tab index 1 (Reviews is almost always the 2nd tab)
+    try:
+        tabs = await page.locator("[role='tab']").all()
+        if len(tabs) >= 2:
+            await tabs[1].click()
+            print("      → Tab clicked via S8 (2nd tab by index)")
+            return True
+    except:
+        pass
+
+    # S9: Keyboard navigation – Tab key to focus + Enter
+    try:
+        await page.keyboard.press("Tab")
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Tab")
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Enter")
+        print("      → Tab clicked via S9 (keyboard Tab+Enter)")
+        return True
+    except:
+        pass
+
+    print("      → All tab strategies failed")
     return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Sort by Newest
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def sort_by_newest(page) -> bool:
-    """Click the sort button and choose Newest."""
-    # Find and click sort button
-    sort_clicked = await try_click(page, [
-        'button[aria-label*="Sort" i]',
-        'button[jsaction*="sort" i]',
-        'button.g88MCb',
-        'div[data-value="Sort"]',
-        # fallback: any button near reviews with a sort icon
-        'div[role="main"] button:has(span.google-symbols)',
-    ], timeout=3000)
+    sort_selectors = [
+        "button[aria-label*='Sort' i]",
+        "button[jsaction*='sort' i]",
+        "button.g88MCb",
+        "div[data-value='Sort']",
+        "[jsaction*='pane.reviews.sorter']",
+        # JS fallback
+    ]
 
-    if not sort_clicked:
-        return False
-
-    await asyncio.sleep(random.uniform(0.8, 1.5))
-
-    # Click "Newest" option - it's always index 1 in the dropdown
-    for sel in [
-        'li[data-index="1"]',
-        'div[data-index="1"]',
-        '[data-index="1"]',
-        # text match fallback
-        'li:has-text("Newest")',
-        'div:has-text("Newest")',
-        'span:has-text("Newest")',
-    ]:
+    clicked_sort = False
+    for sel in sort_selectors:
         try:
             loc = page.locator(sel).first
             if await loc.is_visible(timeout=2000):
                 await loc.click()
-                return True
-        except Exception:
+                clicked_sort = True
+                break
+        except:
             continue
+
+    if not clicked_sort:
+        # JS fallback: find button near reviews with sort icon
+        try:
+            clicked_sort = await page.evaluate("""
+                () => {
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (lbl.includes('sort')) { b.click(); return true; }
+                    }
+                    return false;
+                }
+            """)
+        except:
+            pass
+
+    if not clicked_sort:
+        return False
+
+    await asyncio.sleep(random.uniform(1.0, 1.8))
+
+    # Click "Newest" option
+    newest_selectors = [
+        "li[data-index='1']", "div[data-index='1']", "[data-index='1']",
+        "li:nth-child(2)", "div.fxNQSd:nth-child(2)",
+    ]
+    for sel in newest_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1500):
+                await loc.click()
+                return True
+        except:
+            continue
+
+    # Text-based fallback
+    try:
+        loc = page.get_by_text("Newest", exact=True).first
+        if await loc.is_visible(timeout=1500):
+            await loc.click()
+            return True
+    except:
+        pass
 
     return False
 
 
-async def find_scroll_panel(page):
-    """
-    Find the scrollable reviews container.
-    Returns the element handle or None.
-    """
+# ══════════════════════════════════════════════════════════════════════════════
+# Find scrollable reviews panel
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def find_panel(page):
+    """Return JS element handle for the scrollable reviews panel."""
     for sel in [
-        "div.m6QErb.DxyBCb",           # most common
-        "div.m6QErb[aria-label]",
+        "div.m6QErb.DxyBCb",
+        "div.m6QErb.WNBkOb",
+        "div.m6QErb",
         "div[role='feed']",
         "div.section-scrollbox.XiKgde",
         "div.section-scrollbox",
-        "div.m6QErb",
     ]:
         try:
             loc = page.locator(sel).first
             if await loc.count():
                 box = await loc.bounding_box()
-                if box and box["height"] > 100:  # must be a real visible panel
+                if box and box["height"] > 200:
                     return await loc.element_handle()
-        except Exception:
+        except:
             continue
+
+    # JS fallback: find the tallest scrollable div inside role=main
+    try:
+        handle = await page.evaluate_handle("""
+            () => {
+                const main = document.querySelector('[role="main"]');
+                if (!main) return null;
+                let best = null, bestH = 0;
+                for (const el of main.querySelectorAll('div')) {
+                    if (el.scrollHeight > el.clientHeight + 50 && el.clientHeight > 200) {
+                        if (el.clientHeight > bestH) { best = el; bestH = el.clientHeight; }
+                    }
+                }
+                return best;
+            }
+        """)
+        obj = handle.as_element()
+        if obj:
+            return obj
+    except:
+        pass
+
     return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Core scraper
+# Parse a single review card
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _scrape_once(branch: dict, snap_date: str) -> list[dict]:
+async def parse_card(card, branch: dict, snap_date: str, ref_time: datetime) -> dict | None:
+    # Author
+    author = "Unknown"
+    for sel in [".d4r55", ".fontHeadlineSmall", ".jJc9Ad", ".Vpc5Fe", "button[aria-label*='photo']"]:
+        try:
+            el = card.locator(sel).first
+            if await el.count():
+                t = (await el.inner_text(timeout=800)).strip()
+                if t and t != "Unknown":
+                    author = t; break
+        except:
+            pass
+
+    # Rating
+    rating = 0.0
+    for sel in ["span[role='img'][aria-label]", ".kvMYJc", ".hCCjke span[aria-label]",
+                "span[aria-label*='star' i]", "span[aria-label*='Star']"]:
+        try:
+            el = card.locator(sel).first
+            if await el.count():
+                raw = (await el.get_attribute("aria-label", timeout=800)) or ""
+                m = re.search(r"(\d+\.?\d*)", raw)
+                if m:
+                    rating = float(m.group(1)); break
+        except:
+            pass
+
+    # Review text
+    text = ""
+    for sel in [".wiI7pd", "span.wiI7pd", ".MyEned span", ".Jtu6Td", ".review-full-text"]:
+        try:
+            el = card.locator(sel).first
+            if await el.count():
+                t = (await el.inner_text(timeout=800)).strip().replace("\n", " ")
+                if t:
+                    text = t; break
+        except:
+            pass
+
+    # Timestamp
+    rel_time = ""
+    for sel in [".rsqaWe", ".DU9Pgb", "span.dehysf", "span[class*='dehysf']",
+                ".xRkPPb", "span.y3Ibjb"]:
+        try:
+            el = card.locator(sel).first
+            if await el.count():
+                t = (await el.inner_text(timeout=800)).strip()
+                if t:
+                    rel_time = t; break
+        except:
+            pass
+
+    if not is_within_23h(rel_time):
+        return None
+
+    return {
+        "fingerprint":  make_fp(rating, author, text),
+        "branch_id":    branch["id"],
+        "branch_name":  branch["name"],
+        "agm":          branch["agm"],
+        "author":       author,
+        "rating":       rating,
+        "text":         text,
+        "rel_time":     rel_time,
+        "parsed_date":  rel_to_abs(rel_time, ref_time),
+        "snap_date":    snap_date,
+        "scraped_at":   ref_time.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Core scrape: one branch
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _scrape_once(branch: dict, snap_date: str, attempt: int = 1) -> list[dict]:
     name     = branch["name"]
     place_id = branch["place_id"]
+    sl       = slug(name)
 
-    # ── URL STRATEGY ───────────────────────────────────────────────────────────
-    # Use the place_id URL which loads the sidebar directly.
-    # We try THREE URL patterns and use whichever loads the sidebar.
-    urls = [
-        # Pattern 1: Direct place_id lookup (most reliable)
-        f"https://www.google.com/maps/place/?q=place_id:{place_id}",
-        # Pattern 2: Maps search with place_id
-        f"https://www.google.com/maps/search/?api=1&query_place_id={place_id}",
-    ]
+    # hl=en forces English UI — critical for text-based selectors
+    url = f"https://www.google.com/maps/place/?q=place_id:{place_id}&hl=en"
 
     reviews: list[dict] = []
+    extra_wait = 3 * (attempt - 1)   # longer waits on retries
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
@@ -410,146 +684,118 @@ async def _scrape_once(branch: dict, snap_date: str) -> list[dict]:
             ctx  = await make_context(browser)
             page = await ctx.new_page()
 
-            # Abort image/font/media requests – speeds up load significantly
+            # Block images/media to speed up load (keep JS/CSS/XHR)
             await page.route(
-                "**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,otf,mp4,mp3,pdf}",
+                re.compile(r"\.(png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|mp4|mp3)(\?.*)?$"),
                 lambda route: route.abort()
             )
 
-            sidebar_loaded = False
+            # ── 1. Navigate ───────────────────────────────────────────────────
+            print(f"    [{name}] Navigating… (attempt {attempt})", flush=True)
+            try:
+                await page.goto(url, wait_until="load", timeout=60_000)
+            except PWTimeout:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
-            for url in urls:
-                try:
-                    await page.goto(url, wait_until="load", timeout=50_000)
-                except Exception:
-                    try:
-                        await page.goto(url, wait_until="domcontentloaded", timeout=50_000)
-                    except Exception:
-                        continue
+            # ── 2. Wait for Maps app to fully boot ────────────────────────────
+            # Maps is a React/JS SPA — DOM is empty until JS runs
+            # Wait for ANY of these indicators of a live sidebar
+            sidebar_ready = await wait_for_any(page, [
+                "div[role='main']",
+                "h1.DUwDvf",
+                "h1.fontHeadlineLarge",
+                "span.F7nice",
+                "div.F7nice",
+                "button[aria-label*='review' i]",
+                "div[role='tab']",
+            ], timeout=25_000 + extra_wait * 1000)
 
-                # Give Maps JS time to fully bootstrap
-                await asyncio.sleep(random.uniform(4, 6))
-
-                # ── Dismiss consent dialogs ───────────────────────────────────
-                for consent_sel in [
-                    'button[aria-label*="Accept all"]',
-                    'button[aria-label*="Reject all"]',
-                    '[aria-label*="Before you continue"] button:last-child',
-                    'form:has(button[jsname]) button:first-child',
-                    '#L2AGLb',   # Google's "I agree" button id
-                ]:
-                    try:
-                        b = page.locator(consent_sel).first
-                        if await b.is_visible(timeout=1500):
-                            await b.click()
-                            await asyncio.sleep(1)
-                            break
-                    except Exception:
-                        pass
-
-                # ── Wait for the sidebar to mount ─────────────────────────────
-                # The sidebar always contains an h1 with the place name
-                # OR a div with role="main"
-                sidebar_selectors = [
-                    'div[role="main"]',
-                    'h1.DUwDvf',           # place name heading
-                    'h1.fontHeadlineLarge',
-                    'div.bJzME',
-                    'div[jsaction*="pane"]',
-                    # Review count is always present in the sidebar
-                    'span.F7nice',
-                    'div.F7nice',
-                ]
-                for s_sel in sidebar_selectors:
-                    try:
-                        await page.wait_for_selector(s_sel, timeout=15_000)
-                        sidebar_loaded = True
-                        break
-                    except PWTimeout:
-                        continue
-
-                if sidebar_loaded:
-                    break
-
-            if not sidebar_loaded:
-                print(f"    [FAIL] {name}: sidebar never loaded on any URL", flush=True)
+            if not sidebar_ready:
+                print(f"    [{name}] Sidebar not found after 25s — dumping DOM", flush=True)
+                await dump_dom(page, name, "no_sidebar")
                 return []
 
-            await asyncio.sleep(random.uniform(1, 2))
+            # Extra boot time on retries
+            await asyncio.sleep(random.uniform(3 + extra_wait, 5 + extra_wait))
 
-            # ── Click Reviews tab ─────────────────────────────────────────────
-            clicked = await click_reviews_tab(page)
-            if not clicked:
-                # Last resort: look for the reviews count button and click it
+            # Dismiss consent dialogs
+            for consent_sel in [
+                "#L2AGLb",                                       # "I agree"
+                "button[aria-label*='Accept all' i]",
+                "button[aria-label*='Reject all' i]",
+                "[aria-label*='Before you continue'] button:last-child",
+                "form[action*='consent'] button",
+            ]:
                 try:
-                    loc = page.locator("span.F7nice, div.F7nice").first
-                    if await loc.is_visible(timeout=3000):
-                        await loc.click()
-                        clicked = True
-                except Exception:
+                    b = page.locator(consent_sel).first
+                    if await b.is_visible(timeout=1000):
+                        await b.click()
+                        await asyncio.sleep(1)
+                        break
+                except:
                     pass
 
-            if clicked:
-                await asyncio.sleep(random.uniform(2.5, 3.5))
-            else:
-                print(f"    [WARN] {name}: Reviews tab not clicked, proceeding anyway", flush=True)
+            # Debug: what does the page look like after load?
+            await dump_dom(page, name, "01_after_load")
 
-            # ── Sort by newest ────────────────────────────────────────────────
-            await sort_by_newest(page)
-            await asyncio.sleep(random.uniform(2, 3))
+            # ── 3. Click Reviews tab ──────────────────────────────────────────
+            clicked = await click_reviews_tab(page)
+            await asyncio.sleep(random.uniform(3 + extra_wait, 4 + extra_wait))
 
-            # ── Find scroll panel ─────────────────────────────────────────────
-            panel_handle = await find_scroll_panel(page)
-            if not panel_handle:
-                print(f"    [WARN] {name}: scroll panel not found, using keyboard scroll", flush=True)
+            await dump_dom(page, name, "02_after_tab_click")
 
-            # ── Scroll loop ───────────────────────────────────────────────────
+            # ── 4. Sort by Newest ─────────────────────────────────────────────
+            sorted_ok = await sort_by_newest(page)
+            if sorted_ok:
+                await asyncio.sleep(random.uniform(2, 3))
+
+            await dump_dom(page, name, "03_after_sort")
+
+            # ── 5. Find scroll panel ──────────────────────────────────────────
+            panel = await find_panel(page)
+
+            # ── 6. Scroll loop ────────────────────────────────────────────────
             prev_count   = 0
             stale_rounds = 0
 
-            for _round in range(MAX_SCROLL_ROUNDS):
-                # Expand "More" / "See more" buttons
-                for more_sel in [
-                    "button.w8nwRe",
-                    'button[aria-label="See more"]',
-                    "button.lcr4fd",
-                    'span:has-text("More"):not(button)',
-                ]:
-                    btns = page.locator(more_sel)
-                    n    = await btns.count()
-                    for i in range(n):
-                        try:
-                            b = btns.nth(i)
-                            if await b.is_visible(timeout=300):
-                                await b.click()
-                                await asyncio.sleep(0.2)
-                        except Exception:
-                            pass
+            for round_idx in range(MAX_SCROLL_ROUNDS):
+                # Expand "More" buttons
+                for more_sel in ["button.w8nwRe", "button[aria-label='See more']", "button.lcr4fd"]:
+                    try:
+                        btns = page.locator(more_sel)
+                        for i in range(await btns.count()):
+                            try:
+                                b = btns.nth(i)
+                                if await b.is_visible(timeout=200):
+                                    await b.click()
+                                    await asyncio.sleep(0.15)
+                            except:
+                                pass
+                    except:
+                        pass
 
-                # Check last timestamp → stop if past the 23 h window
-                ts_loc  = page.locator(".rsqaWe, .DU9Pgb, span.dehysf")
-                ts_cnt  = await ts_loc.count()
+                # Check last timestamp — stop if beyond 23h window
+                ts_loc = page.locator(".rsqaWe, .DU9Pgb, span.dehysf")
+                ts_cnt = await ts_loc.count()
                 if ts_cnt > 0:
                     try:
-                        last_ts = (await ts_loc.nth(ts_cnt - 1).inner_text(timeout=800)).strip()
+                        last_ts = (await ts_loc.nth(ts_cnt - 1).inner_text(timeout=500)).strip()
                         if last_ts and not is_within_23h(last_ts):
+                            print(f"    [{name}] Reached old review at round {round_idx}: {last_ts!r}")
                             break
-                    except Exception:
+                    except:
                         pass
 
                 # Scroll
-                if panel_handle:
+                if panel:
                     try:
-                        await page.evaluate(
-                            "el => { el.scrollTop = el.scrollHeight; }",
-                            panel_handle,
-                        )
-                    except Exception:
-                        await page.keyboard.press("End")
-                else:
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await page.evaluate("el => { el.scrollTop = el.scrollHeight; }", panel)
+                    except:
+                        panel = None  # panel handle stale, fall through to window scroll
+                if not panel:
+                    await page.evaluate("window.scrollBy(0, 3000)")
 
-                await asyncio.sleep(random.uniform(2.0, 3.2))
+                await asyncio.sleep(random.uniform(2.0, 3.0))
 
                 curr = await page.locator("div.jftiEf").count()
                 if curr == prev_count:
@@ -560,80 +806,33 @@ async def _scrape_once(branch: dict, snap_date: str) -> list[dict]:
                     stale_rounds = 0
                     prev_count   = curr
 
-            # ── Parse cards ───────────────────────────────────────────────────
-            now   = ist_now()
+            await dump_dom(page, name, "04_after_scroll")
+
+            # ── 7. Parse cards ────────────────────────────────────────────────
+            ref  = ist_now()
             cards = await page.locator("div.jftiEf").all()
-            print(f"    [{name}] {len(cards)} total cards in DOM", flush=True)
+            print(f"    [{name}] {len(cards)} cards found", flush=True)
+
+            if len(cards) == 0:
+                # Self-heal: dump everything and flag for retry
+                print(f"    [{name}] ⚠️  Zero cards — will retry with longer waits", flush=True)
+                await dump_dom(page, name, "ZERO_CARDS")
 
             for card in cards:
                 try:
-                    # Author
-                    author = "Unknown"
-                    for a_sel in [".d4r55", ".fontHeadlineSmall", ".jJc9Ad", ".Vpc5Fe"]:
-                        t = await get_text(card.locator(a_sel))
-                        if t:
-                            author = t
-                            break
-
-                    # Rating (look for aria-label like "4 stars" or "Rated 5.0 out of 5")
-                    rating = 0.0
-                    for r_sel in [
-                        "span[role='img'][aria-label]",
-                        ".kvMYJc",
-                        "span[aria-label*='star' i]",
-                        "span[aria-label*='Star']",
-                        ".hCCjke span",
-                    ]:
-                        raw = await get_attr(card.locator(r_sel), "aria-label")
-                        if raw:
-                            m = re.search(r"(\d+\.?\d*)", raw)
-                            if m:
-                                rating = float(m.group(1))
-                                break
-
-                    # Review text
-                    text = ""
-                    for t_sel in [".wiI7pd", "span.wiI7pd", ".MyEned span", ".Jtu6Td"]:
-                        t = await get_text(card.locator(t_sel))
-                        if t:
-                            text = t.replace("\n", " ").strip()
-                            break
-
-                    # Relative timestamp
-                    rel_time = ""
-                    for ts_sel in [".rsqaWe", ".DU9Pgb", "span.dehysf", "span[class*='dehysf']"]:
-                        t = await get_text(card.locator(ts_sel))
-                        if t:
-                            rel_time = t
-                            break
-
-                    # Filter: within 23 hours only
-                    if not is_within_23h(rel_time):
-                        continue
-
-                    fp          = make_fp(rating, author, text)
-                    parsed_date = rel_to_abs(rel_time, now)
-
-                    reviews.append({
-                        "fingerprint": fp,
-                        "branch_id":   branch["id"],
-                        "branch_name": branch["name"],
-                        "agm":         branch["agm"],
-                        "author":      author,
-                        "rating":      rating,
-                        "text":        text,
-                        "rel_time":    rel_time,
-                        "parsed_date": parsed_date,
-                        "snap_date":   snap_date,
-                        "scraped_at":  now.strftime("%Y-%m-%d %H:%M"),
-                    })
-
-                except Exception:
+                    rv = await parse_card(card, branch, snap_date, ref)
+                    if rv:
+                        reviews.append(rv)
+                except:
                     continue
 
         except Exception as exc:
-            print(f"    [ERROR] {name}: {exc!s:.120s}", flush=True)
+            print(f"    [{name}] ERROR: {exc!s:.150s}", flush=True)
             traceback.print_exc()
+            try:
+                await dump_dom(page, name, "EXCEPTION")
+            except:
+                pass
         finally:
             await browser.close()
 
@@ -644,14 +843,19 @@ async def scrape_branch(branch: dict, sem: asyncio.Semaphore, snap_date: str) ->
     async with sem:
         for attempt in range(1, MAX_RETRIES + 2):
             try:
-                result = await _scrape_once(branch, snap_date)
-                icon   = "✅" if result else "⚪"
-                print(f"  {icon} {branch['name']:22s} → {len(result):3d} review(s)", flush=True)
-                return result
+                result = await _scrape_once(branch, snap_date, attempt=attempt)
+                if result or attempt > MAX_RETRIES:
+                    icon = "✅" if result else "⚪"
+                    print(f"  {icon} {branch['name']:22s} → {len(result):3d} review(s)", flush=True)
+                    return result
+                # Zero results but no exception — retry with longer wait
+                wait = 15 * attempt + random.uniform(5, 10)
+                print(f"  ↺  {branch['name']} got 0 reviews, retry {attempt+1} in {wait:.0f}s…", flush=True)
+                await asyncio.sleep(wait)
             except Exception as exc:
-                wait = 12 * attempt + random.uniform(3, 8)
+                wait = 15 * attempt + random.uniform(5, 10)
                 if attempt <= MAX_RETRIES:
-                    print(f"  ⚠️  {branch['name']} attempt {attempt} failed ({exc!s:.60s}) – retry in {wait:.0f}s")
+                    print(f"  ⚠️  {branch['name']} attempt {attempt} exception – retry in {wait:.0f}s")
                     await asyncio.sleep(wait)
                 else:
                     print(f"  ❌ {branch['name']} gave up.", flush=True)
@@ -666,7 +870,6 @@ def track_deletions(live_map, old_del_map, old_live_map, fresh_fps, snap_date):
     now_str = ist_now().strftime("%Y-%m-%d %H:%M")
     del_out = dict(old_del_map)
 
-    # Reinstatements
     for fp in list(del_out.keys()):
         if fp in fresh_fps:
             item = dict(del_out.pop(fp))
@@ -675,26 +878,20 @@ def track_deletions(live_map, old_del_map, old_live_map, fresh_fps, snap_date):
             live_map[fp] = item
             print(f"    ♻️  Reinstated: {item.get('branch_name')} – {item.get('author')}")
 
-    # Deletions (scoped to current snap_date only)
     scoped = {fp: v for fp, v in old_live_map.items() if v.get("snap_date") == snap_date}
     for fp, item in scoped.items():
         if fp not in fresh_fps and fp not in del_out:
-            di = dict(item)
-            di["deleted_on"] = now_str
-            del_out[fp] = di
-            live_map.pop(fp, None)
+            di = dict(item); di["deleted_on"] = now_str
+            del_out[fp] = di; live_map.pop(fp, None)
             print(f"    🗑️  Deleted: {item.get('branch_name')} – {item.get('author')}")
 
-    # Purge old deletion records
     cutoff = ist_now() - timedelta(days=DELETION_DAYS)
     purged = 0
     for fp in list(del_out.keys()):
         try:
-            d = datetime.strptime(del_out[fp].get("deleted_on", ""), "%Y-%m-%d %H:%M").replace(tzinfo=IST)
-            if d < cutoff:
-                del_out.pop(fp); purged += 1
-        except Exception:
-            pass
+            d = datetime.strptime(del_out[fp].get("deleted_on",""), "%Y-%m-%d %H:%M").replace(tzinfo=IST)
+            if d < cutoff: del_out.pop(fp); purged += 1
+        except: pass
     if purged:
         print(f"    🧹 Purged {purged} old deletion(s)")
 
@@ -709,21 +906,20 @@ async def main():
     slot      = get_run_slot()
     snap_date = snap_date_for_slot(slot)
 
-    print(f"\n{'═'*62}")
-    print(f"  Sathya Review Scraper")
-    print(f"  Slot: {slot}  |  snap_date: {snap_date}")
-    print(f"  IST:  {ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'═'*62}\n")
+    print(f"\n{'═'*64}")
+    print(f"  Sathya Review Scraper  |  slot={slot}  |  snap_date={snap_date}")
+    print(f"  IST: {ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Python {sys.version.split()[0]}  |  debug → debug/")
+    print(f"{'═'*64}\n")
 
     old_live_map = {r["fingerprint"]: r for r in load_json(REV_JSON)}
     old_del_map  = {r["fingerprint"]: r for r in load_json(DEL_JSON)}
-    print(f"  Loaded: {len(old_live_map)} live, {len(old_del_map)} deleted\n")
+    print(f"  Existing: {len(old_live_map)} live, {len(old_del_map)} deleted\n")
 
     sem     = asyncio.Semaphore(MAX_CONCURRENT)
     tasks   = [scrape_branch(b, sem, snap_date) for b in BRANCHES]
     batches = await asyncio.gather(*tasks)
 
-    # Flatten + dedup within run
     fresh_map: dict[str, dict] = {}
     for batch in batches:
         for r in batch:
@@ -733,19 +929,17 @@ async def main():
     fresh_fps = set(fresh_map.keys())
     print(f"\n  This run: {len(fresh_fps)} unique reviews within 23h\n")
 
-    # Merge
     merged = dict(old_live_map)
-    new_c = updated_c = 0
+    new_c = upd_c = 0
     for fp, r in fresh_map.items():
         if fp not in merged:
             merged[fp] = r; new_c += 1
         else:
-            existing = dict(merged[fp])
-            existing.update({"rel_time": r["rel_time"], "parsed_date": r["parsed_date"], "scraped_at": r["scraped_at"]})
-            merged[fp] = existing; updated_c += 1
+            ex = dict(merged[fp])
+            ex.update({"rel_time": r["rel_time"], "parsed_date": r["parsed_date"], "scraped_at": r["scraped_at"]})
+            merged[fp] = ex; upd_c += 1
 
-    print(f"  Merge: {new_c} new, {updated_c} refreshed")
-
+    print(f"  Merge: {new_c} new, {upd_c} refreshed")
     merged, merged_del = track_deletions(merged, old_del_map, old_live_map, fresh_fps, snap_date)
 
     final_live = sorted(merged.values(),     key=lambda x: (x.get("snap_date",""), x.get("parsed_date","")), reverse=True)
@@ -754,9 +948,10 @@ async def main():
     save_json(REV_JSON, final_live)
     save_json(DEL_JSON, final_del)
 
-    print(f"\n{'═'*62}")
+    print(f"\n{'═'*64}")
     print(f"  ✅  rev.json: {len(final_live)}  |  deleted.json: {len(final_del)}")
-    print(f"{'═'*62}\n")
+    print(f"  📁  Debug artifacts saved to debug/")
+    print(f"{'═'*64}\n")
 
 
 if __name__ == "__main__":
