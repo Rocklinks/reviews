@@ -1,43 +1,49 @@
 name: Sathya Reviews Scraper
+
 on:
   schedule:
-    - cron: '30 0 * * *' # 6:00 AM IST
-    - cron: '30 6 * * *' # 12:00 PM IST
-    - cron: '30 12 * * *' # 6:00 PM IST
-    - cron: '30 18 * * *' # 12:00 AM IST (next day)
-  workflow_dispatch:
+    - cron: '30 0 * * *'   # 06:00 IST  → morning slot
+    - cron: '30 6 * * *'   # 12:00 IST  → noon slot
+    - cron: '30 12 * * *'  # 18:00 IST  → evening slot
+    - cron: '30 18 * * *'  # 00:00 IST  → midnight slot (snap_date = yesterday)
+  workflow_dispatch:       # manual trigger from GitHub UI
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
     steps:
-      - name: Checkout Repository
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # ── Python ───────────────────────────────────────────────────────────────
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Python Dependencies
-        run: |
-          pip install -r requirements.txt
+      - name: Install Python dependencies
+        run: pip install playwright==1.44.0
 
-      # Playwright Browser Caching
-      - name: Cache Playwright Browsers
-        uses: actions/cache@v4
+      # ── Playwright browser cache ──────────────────────────────────────────────
+      - name: Cache Playwright browsers
         id: playwright-cache
+        uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
+          key: ${{ runner.os }}-playwright-chromium-1.44.0
+          restore-keys: ${{ runner.os }}-playwright-chromium-
 
-      # ←←← Even More Defensive: Comprehensive t64 packages for Ubuntu 24.04+
-      - name: Install System Dependencies (Ubuntu 24.04+ compatible)
+      # ── System libraries (Ubuntu 24.04 uses t64 package names) ───────────────
+      # We install these manually so we can use playwright install chromium
+      # WITHOUT playwright install-deps (which tries to install libasound2
+      # — the old name — and fails on Ubuntu 24.04).
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
             libasound2t64 \
             libatk-bridge2.0-0t64 \
             libatk1.0-0t64 \
@@ -64,31 +70,41 @@ jobs:
             libglib2.0-0t64 \
             libxcb1 \
             libx11-6 \
+            libegl1 \
+            libgl1 \
             fonts-liberation \
             fonts-noto-color-emoji
 
-      - name: Install Playwright Browsers
-        run: |
-          # Install browser only (do NOT let it install deps automatically on every run)
-          playwright install chromium
-          
-          # Run install-deps only if cache miss (more defensive approach)
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-            echo "Cache miss detected - installing system dependencies via playwright..."
-            playwright install-deps chromium
-          else
-            echo "Cache hit - skipping playwright install-deps"
-          fi
+      # ── Install Chromium binary only (NO install-deps to avoid libasound2) ────
+      - name: Install Playwright Chromium
+        run: playwright install chromium
 
-      - name: Run Scraper
-        run: python scraper.py
+      # ── Run scraper ───────────────────────────────────────────────────────────
+      - name: Run scraper
+        run: python main.py
         env:
-          CI: true
+          CI: "true"
+          LANG: "en_US.UTF-8"
+          LC_ALL: "en_US.UTF-8"
 
-      - name: Commit and Push Changes
+      # ── Upload debug artifacts (always, even on failure) ──────────────────────
+      # Download from: Actions tab → your run → Artifacts → debug-N
+      # Contains screenshots + DOM dumps for every branch at every step.
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_number }}
+          path: debug/
+          retention-days: 7
+
+      # ── Commit & push ─────────────────────────────────────────────────────────
+      - name: Commit and push changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add docs/rev.json docs/deleted.json
-          git diff --staged --quiet || git commit -m "🔄 Update Reviews $(date '+%Y-%m-%d %H:%M')"
-          git push
+          git diff --staged --quiet || (
+            git commit -m "🔄 Reviews $(date -u '+%Y-%m-%d %H:%M UTC')" &&
+            git push
+          )
