@@ -1,110 +1,140 @@
-name: Sathya Reviews Scraper
+name: Sathya Agency Review Scraper
 
 on:
   schedule:
-    - cron: '30 0 * * *'   # 06:00 IST  → morning slot
-    - cron: '30 6 * * *'   # 12:00 IST  → noon slot
-    - cron: '30 12 * * *'  # 18:00 IST  → evening slot
-    - cron: '30 18 * * *'  # 00:00 IST  → midnight slot (snap_date = yesterday)
-  workflow_dispatch:       # manual trigger from GitHub UI
+    # All times in UTC. IST = UTC+5:30
+    # 06:00 IST = 00:30 UTC
+    - cron: "30 0 * * *"
+    # 12:00 IST = 06:30 UTC
+    - cron: "30 6 * * *"
+    # 18:00 IST = 12:30 UTC
+    - cron: "30 12 * * *"
+    # 00:00 IST = 18:30 UTC (previous day midnight run)
+    - cron: "30 18 * * *"
+
+  workflow_dispatch:
+    inputs:
+      hour:
+        description: "Override IST hour (0, 6, 12, 18)"
+        required: false
+        default: ""
+      method:
+        description: "Force scraper method (playwright / selenium / pyautogui)"
+        required: false
+        default: ""
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+
+    permissions:
+      contents: write   # needed to commit rev.json / deleted.json back
 
     steps:
-      # ── Checkout ─────────────────────────────────────────────────────────────
+      # ── 1. Checkout repo ────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      # ── Python ───────────────────────────────────────────────────────────────
+      # ── 2. Set up Python ────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
+      # ── 3. Install Python dependencies ──────────────────────────────────────
       - name: Install Python dependencies
-        run: pip install playwright==1.44.0
+        run: pip install -r requirements.txt
 
-      # ── Playwright browser cache ──────────────────────────────────────────────
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-chromium-1.44.0
-          restore-keys: ${{ runner.os }}-playwright-chromium-
+      # ── 4. Install Playwright browsers ──────────────────────────────────────
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium --with-deps
+        continue-on-error: true   # don't block if playwright install fails
 
-      # ── System libraries (Ubuntu 24.04 uses t64 package names) ───────────────
-      # We install these manually so we can use playwright install chromium
-      # WITHOUT playwright install-deps (which tries to install libasound2
-      # — the old name — and fails on Ubuntu 24.04).
-      - name: Install system dependencies
+      # ── 5. Install Brave (for Selenium / PyAutoGUI fallback) ────────────────
+      - name: Install Brave browser
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libasound2t64 \
-            libatk-bridge2.0-0t64 \
-            libatk1.0-0t64 \
-            libatspi2.0-0t64 \
-            libcups2t64 \
-            libdbus-1-3 \
-            libdrm2 \
-            libgbm1 \
-            libgtk-3-0t64 \
-            libnspr4 \
-            libnss3 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxext6 \
-            libxfixes3 \
-            libxkbcommon0 \
-            libxrandr2 \
-            libxshmfence1 \
-            libxss1 \
-            libxtst6 \
-            libcairo2 \
-            libpango-1.0-0 \
-            libpangocairo-1.0-0 \
-            libglib2.0-0t64 \
-            libxcb1 \
-            libx11-6 \
-            libegl1 \
-            libgl1 \
-            fonts-liberation \
-            fonts-noto-color-emoji
+          sudo apt-get install -y apt-transport-https curl
+          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
+            https://brave-browser-apt-release.s3.brave.com/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+          sudo apt-get update -qq
+          sudo apt-get install -y brave-browser
+        continue-on-error: true
 
-      # ── Install Chromium binary only (NO install-deps to avoid libasound2) ────
-      - name: Install Playwright Chromium
-        run: playwright install chromium
-
-      # ── Run scraper ───────────────────────────────────────────────────────────
-      - name: Run scraper
-        run: python main.py
-        env:
-          CI: "true"
-          LANG: "en_US.UTF-8"
-          LC_ALL: "en_US.UTF-8"
-
-      # ── Upload debug artifacts (always, even on failure) ──────────────────────
-      # Download from: Actions tab → your run → Artifacts → debug-N
-      # Contains screenshots + DOM dumps for every branch at every step.
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-${{ github.run_number }}
-          path: debug/
-          retention-days: 7
-
-      # ── Commit & push ─────────────────────────────────────────────────────────
-      - name: Commit and push changes
+      # ── 6. Install Xvfb (virtual display for PyAutoGUI) ─────────────────────
+      - name: Install Xvfb and X utilities
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add docs/rev.json docs/deleted.json
-          git diff --staged --quiet || (
-            git commit -m "🔄 Reviews $(date -u '+%Y-%m-%d %H:%M UTC')" &&
-            git push
-          )
+          sudo apt-get install -y xvfb xdotool
+        continue-on-error: true
+
+      # ── 7. Start Xvfb virtual display ───────────────────────────────────────
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x900x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+        continue-on-error: true
+
+      # ── 8. Install ChromeDriver (for Selenium) ───────────────────────────────
+      - name: Install ChromeDriver
+        run: |
+          # webdriver-manager handles this automatically, but ensure chromium is present
+          sudo apt-get install -y chromium-browser chromium-chromedriver || true
+        continue-on-error: true
+
+      # ── 9. Determine IST hour from cron schedule ─────────────────────────────
+      - name: Determine IST hour
+        id: ist_hour
+        run: |
+          if [ -n "${{ github.event.inputs.hour }}" ]; then
+            echo "hour=${{ github.event.inputs.hour }}" >> $GITHUB_OUTPUT
+          else
+            # Calculate IST hour from current UTC time
+            UTC_HOUR=$(date -u +%H)
+            UTC_MIN=$(date -u +%M)
+            IST_TOTAL=$(( UTC_HOUR * 60 + UTC_MIN + 330 ))
+            IST_HOUR=$(( (IST_TOTAL / 60) % 24 ))
+            echo "hour=${IST_HOUR}" >> $GITHUB_OUTPUT
+            echo "Detected IST hour: ${IST_HOUR}"
+          fi
+
+      # ── 10. Run the scraper ──────────────────────────────────────────────────
+      - name: Run review scraper
+        env:
+          DISPLAY: ":99"
+        run: |
+          HOUR="${{ steps.ist_hour.outputs.hour }}"
+          METHOD="${{ github.event.inputs.method }}"
+
+          CMD="python main.py --hour ${HOUR}"
+          if [ -n "${METHOD}" ]; then
+            CMD="${CMD} --method ${METHOD}"
+          fi
+
+          echo "Running: ${CMD}"
+          ${CMD}
+
+      # ── 11. Commit updated JSON files back to repo ───────────────────────────
+      - name: Commit & push results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Pull latest to avoid conflicts (another job may have pushed)
+          git pull --rebase origin main || true
+
+          git add rev.json deleted.json .deletion_meta.json || true
+          git diff --staged --quiet && echo "No changes to commit." && exit 0
+
+          RUN_LABEL=$(date -u +"%Y-%m-%d %H:%M UTC")
+          git commit -m "chore: review scrape — ${RUN_LABEL} [skip ci]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

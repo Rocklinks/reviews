@@ -59,3 +59,6 @@ AGM_MAP = {
     "Aruppukottai": "Venkatesh","Aruppukottai -2": "Venkatesh",
     "Sivakasi": "Venkatesh",    "Colachel-1": "Venkatesh",
 }
+
+# Build a quick lookup dict: place_id -> (branch_id, branch_name)
+PLACE_ID_MAP = {place_id: (bid, name) for bid, name, place_id in BRANCHES}

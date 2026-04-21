@@ -1,4 +1,14 @@
-playwright
-playwright-stealth
-asyncio
-jsonlines
+# ─── Method 1: Playwright ─────────────────────────────────────────────────────
+playwright>=1.43.0
+
+# ─── Method 2: Selenium ───────────────────────────────────────────────────────
+selenium>=4.20.0
+webdriver-manager>=4.0.1          # auto-downloads matching chromedriver
+
+# ─── Method 3: PyAutoGUI ──────────────────────────────────────────────────────
+pyautogui>=0.9.54
+pyperclip>=1.8.2
+Pillow>=10.0.0                    # required by pyautogui for screenshots
+
+# ─── Shared / utils ───────────────────────────────────────────────────────────
+# (stdlib only — no extra deps needed for utils.py / branches.py)
