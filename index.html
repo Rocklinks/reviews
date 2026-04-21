@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sathya Reviews Explorer</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;50&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:#f8fafc; --surface:#ffffff; --border:#e2e8f0;
+      --text:#1e293b; --text2:#475569; --muted:#64748b;
+      --green:#059669; --rose:#e11d48; --indigo:#4f46e5;
+      --amber:#d97706; --teal:#0891b2;
+    }
+    @media(prefers-color-scheme:dark){
+      :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#f1f5f9;--text2:#cbd5e1;--muted:#94a3b8;}
+    }
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:20px;min-height:100vh}
+    .container{max-width:1100px;margin:0 auto}
+    .header{text-align:center;margin-bottom:28px}
+    .header h1{font-size:26px;font-weight:700}
+    .live-dot{display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:50%;margin-right:6px;animation:pulse 2s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+    .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;flex:1;min-width:120px;text-align:center}
+    .stat-num{font-size:22px;font-weight:700;color:var(--indigo)}
+    .stat-label{font-size:12px;color:var(--muted);margin-top:2px}
+    .toolbar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    select,input[type="text"]{padding:9px 13px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--surface);color:var(--text);font-family:inherit}
+    .tabs{display:flex;gap:8px;margin-bottom:16px}
+    .tab{padding:8px 18px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:600;cursor:pointer;background:var(--surface);color:var(--text2);transition:all .15s}
+    .tab.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+    .card.deleted{border-color:rgba(225,29,72,.25);background:rgba(225,29,72,.03)}
+    .card-header{display:flex;justify-content:space-between;align-items:flex-start}
+    .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;flex-shrink:0}
+    .meta{flex:1;margin-left:12px}
+    .author{font-weight:600;font-size:14px}
+    .branch{font-size:12px;color:var(--muted);margin-top:1px}
+    .stars-col{text-align:right;flex-shrink:0}
+    .stars{color:#f59e0b;font-size:16px;letter-spacing:-1px}
+    .time-str{font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:2px}
+    .review-text{margin:10px 0 8px;color:var(--text2);font-size:14px;line-height:1.7}
+    .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+    .tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
+    .tag-r1,.tag-r2{background:rgba(225,29,72,.1);color:var(--rose)}
+    .tag-r3{background:rgba(217,119,6,.1);color:var(--amber)}
+    .tag-r4,.tag-r5{background:rgba(5,150,105,.1);color:var(--green)}
+    .tag-date{background:rgba(79,70,229,.08);color:var(--indigo)}
+    .tag-seen{background:rgba(8,145,178,.08);color:var(--teal)}
+    .tag-deleted{background:rgba(225,29,72,.12);color:var(--rose);border:1px solid rgba(225,29,72,.2)}
+    .tag-agm{background:rgba(79,70,229,.08);color:var(--indigo)}
+    .tag-new{background:rgba(5,150,105,.15);color:var(--green);border:1px solid rgba(5,150,105,.3)}
+    .pagination{display:flex;justify-content:center;gap:6px;margin-top:16px;flex-wrap:wrap}
+    .pg{padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer;font-size:13px;color:var(--text)}
+    .pg.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+    .empty,.loading{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px}
+    .error{text-align:center;padding:40px;color:var(--rose);font-size:14px}
+    .update-badge{display:inline-block;background:rgba(5,150,105,.1);color:var(--green);border-radius:20px;padding:2px 10px;font-size:11px;font-weight:600;margin-left:8px}
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1><span class="live-dot"></span>⭐ Sathya Reviews Explorer</h1>
+    <p id="subtitle">Loading reviews…</p>
+  </div>
+
+  <div class="stats" id="stats" style="display:none">
+    <div class="stat"><div class="stat-num" id="s-total">—</div><div class="stat-label">Live reviews</div></div>
+    <div class="stat"><div class="stat-num" id="s-branches">—</div><div class="stat-label">Branches</div></div>
+    <div class="stat"><div class="stat-num" id="s-avg">—</div><div class="stat-label">Avg rating</div></div>
+    <div class="stat"><div class="stat-num" id="s-deleted">—</div><div class="stat-label">Deleted reviews</div></div>
+    <div class="stat"><div class="stat-num" id="s-date">—</div><div class="stat-label">Last scraped</div></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('live',this)">Live Reviews</button>
+    <button class="tab" onclick="switchTab('deleted',this)">Deleted Reviews</button>
+  </div>
+
+  <div class="toolbar">
+    <select id="branch-sel" onchange="applyFilters()"><option value="">All branches</option></select>
+    <select id="agm-sel"    onchange="applyFilters()"><option value="">All AGMs</option></select>
+    <select id="rating-sel" onchange="applyFilters()">
+      <option value="">All ratings</option>
+      <option value="5">5 ★</option><option value="4">4 ★</option>
+      <option value="3">3 ★</option><option value="2">2 ★</option><option value="1">1 ★</option>
+    </select>
+    <select id="sort-sel" onchange="applyFilters()">
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+      <option value="highest">Highest rating</option>
+      <option value="lowest">Lowest rating</option>
+    </select>
+    <input type="text" id="search" placeholder="Search author or review…" oninput="applyFilters()" style="flex:1;min-width:180px">
+  </div>
+
+  <div class="count-line" id="count-line"></div>
+  <div id="container"><div class="loading">⏳ Fetching reviews…</div></div>
+  <div class="pagination" id="pagination"></div>
+</div>
+<script>
+const REV_URL = 'rev.json';
+const DEL_URL = 'deleted.json';
+const PAGE_SIZE = 20;
+const COLORS = ["#4f46e5","#059669","#d97706","#e11d48","#0891b2","#7c3aed","#16a34a","#dc2626"];
+
+let liveReviews = [], deletedReviews = [], filtered = [];
+let currentPage = 1, activeTab = 'live';
+
+async function loadData() {
+  const t = Date.now();
+  try {
+    // Append timestamp to bypass cache
+    const [revRes, delRes] = await Promise.all([
+      fetch(`${REV_URL}?t=${t}`),
+      fetch(`${DEL_URL}?t=${t}`).catch(() => null),
+    ]);
+    if (!revRes.ok) throw new Error(`Data unavailable (${revRes.status})`);
+    
+    liveReviews = await revRes.json();
+    if (!Array.isArray(liveReviews)) liveReviews = [];
+    
+    if (delRes && delRes.ok) {
+      deletedReviews = await delRes.json();
+      if (!Array.isArray(deletedReviews)) deletedReviews = [];
+    }
+
+    buildFilters();
+    showStats();
+    applyFilters();
+  } catch(e) {
+    document.getElementById('container').innerHTML =
+      `<div class="error">❌ Could not load data.<br><small>${e.message}</small></div>`;
+  }
+}
+
+function buildFilters() {
+  const branches = [...new Set(liveReviews.map(r=>r.branch_name))].sort();
+  const agms     = [...new Set(liveReviews.map(r=>r.agm).filter(Boolean))].sort();
+  
+  const bSel = document.getElementById('branch-sel');
+  const aSel = document.getElementById('agm-sel');
+  
+  // Clear old options except first
+  bSel.innerHTML = '<option value="">All branches</option>';
+  aSel.innerHTML = '<option value="">All AGMs</option>';
+  
+  branches.forEach(b => { 
+    let o=document.createElement('option'); o.value=b; o.textContent=b; bSel.appendChild(o); 
+  });
+  agms.forEach(a => { 
+    let o=document.createElement('option'); o.value=a; o.textContent=a; aSel.appendChild(o); 
+  });
+}
+
+function showStats() {
+  document.getElementById('stats').style.display='flex';
+  document.getElementById('s-total').textContent    = liveReviews.length.toLocaleString();
+  document.getElementById('s-branches').textContent = [...new Set(liveReviews.map(r=>r.branch_name))].length;
+  
+  const rated = liveReviews.filter(r=>r.rating>0);
+  const avg   = rated.length ? (rated.reduce((s,r)=>s+r.rating,0)/rated.length).toFixed(1) : '—';
+  document.getElementById('s-avg').textContent     = avg !== '—' ? avg+' ★' : '—';
+  
+  document.getElementById('s-deleted').textContent = deletedReviews.length.toLocaleString();
+  const dates = [...new Set(liveReviews.map(r=>r.snap_date).filter(Boolean))].sort().reverse();
+  document.getElementById('s-date').textContent    = dates[0] || '—';
+  
+  const lastDate = dates[0] || '';
+  const subtitle = document.getElementById('subtitle');
+  subtitle.innerHTML = `${liveReviews.length.toLocaleString()} total reviews · Scraped 4x daily`;
+  if(lastDate) subtitle.innerHTML += ` <span class="update-badge">last: ${lastDate}</span>`;
+}
+
+function switchTab(tab, el) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  currentPage = 1;
+  applyFilters();
+}
+
+function applyFilters() {
+  const branch = document.getElementById('branch-sel').value;
+  const agm    = document.getElementById('agm-sel').value;
+  const rating = document.getElementById('rating-sel').value;
+  const sort   = document.getElementById('sort-sel').value;
+  const search = document.getElementById('search').value.toLowerCase().trim();
+  const src    = activeTab==='deleted' ? deletedReviews : liveReviews;
+
+  filtered = src.filter(r => {
+    if (branch && r.branch_name!==branch) return false;
+    if (agm    && r.agm!==agm)            return false;
+    if (rating && Math.floor(r.rating)!==parseInt(rating)) return false;
+    if (search && !(
+      (r.author && r.author.toLowerCase().includes(search)) ||
+      (r.text   && r.text.toLowerCase().includes(search))
+    )) return false;
+    return true;
+  });
+
+  if      (sort==='oldest')  filtered.sort((a,b)=>(a.first_seen||'').localeCompare(b.first_seen||''));
+  else if (sort==='newest')  filtered.sort((a,b)=>(b.first_seen||'').localeCompare(a.first_seen||''));
+  else if (sort==='highest') filtered.sort((a,b)=>b.rating-a.rating);
+  else if (sort==='lowest')  filtered.sort((a,b)=>a.rating-b.rating);
+
+  currentPage = 1;
+  document.getElementById('count-line').textContent =
+    `Showing ${filtered.length} matches`;
+  renderPage();
+}
+
+function renderPage() {
+  const container = document.getElementById('container');
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty">No reviews found.</div>`;
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+  const start   = (currentPage-1)*PAGE_SIZE;
+  const slice   = filtered.slice(start, start+PAGE_SIZE);
+  const totalPg = Math.ceil(filtered.length/PAGE_SIZE);
+
+  container.innerHTML = slice.map(r => {
+    const initials = (r.author||'?').split(' ').map(n=>n[0]||'').join('').toUpperCase().slice(0,2);
+    const color    = COLORS[((r.branch_id||1)-1) % COLORS.length];
+    const filled   = Math.max(0,Math.floor(r.rating));
+    const empty    = Math.max(0,5-filled);
+    const stars    = '★'.repeat(filled)+'☆'.repeat(empty);
+    const rClass   = `tag-r${filled}`;
+    const isDel    = activeTab==='deleted';
+    
+    // Check if it's a "new" review (added today)
+    const todayStr = new Date().toISOString().slice(0,10);
+    const isNew    = !isDel && r.snap_date === todayStr;
+
+    return `
+    <div class="card${isDel?' deleted':''}">
+      <div class="card-header">
+        <div style="display:flex;align-items:center">
+          <div class="avatar" style="background:${color}">${esc(initials)}</div>
+          <div class="meta">
+            <div class="author">${esc(r.author||'Anonymous')}</div>
+            <div class="branch">📍 ${esc(r.branch_name||'')}${r.agm?' · '+esc(r.agm):''}</div>
+          </div>
+        </div>
+        <div class="stars-col">
+          <div class="stars">${stars}</div>
+          <div class="time-str">${esc(r.rel_time||r.time||'')}</div>
+        </div>
+      </div>
+      ${r.text?`<div class="review-text">${esc(r.text)}</div>`:''}
+      <div class="tags">
+        ${filled?`<span class="tag ${rClass}">${filled} ★</span>`:''}
+        ${isNew?`<span class="tag tag-new">🆕 New</span>`:''}
+        ${r.first_seen?`<span class="tag tag-seen">👁 ${esc(r.first_seen)}</span>`:''}
+        ${isDel&&r.deleted_on?`<span class="tag tag-deleted">🗑 Deleted ${esc(r.deleted_on)}</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  let pg = '';
+  for (let i=1;i<=totalPg;i++) {
+    if (i===1||i===totalPg||(i>=currentPage-2&&i<=currentPage+2)) {
+      pg += `<button class="pg${i===currentPage?' active':''}" onclick="goPage(${i})">${i}</button>`;
+    } else if (i===currentPage-3||i===currentPage+3) {
+      pg += `<span style="padding:7px 4px;color:var(--muted)">…</span>`;
+    }
+  }
+  document.getElementById('pagination').innerHTML = pg;
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function goPage(n){currentPage=n;renderPage()}
+function esc(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.onload = loadData;
+setInterval(loadData, 300000); // Refresh data every 5 mins in memory
+</script>
+</body>
+</html>
