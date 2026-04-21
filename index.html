@@ -109,77 +109,68 @@ const COLORS = ["#4f46e5","#059669","#d97706","#e11d48","#0891b2","#7c3aed","#16
 
 let liveReviews = [], deletedReviews = [], filtered = [];
 let currentPage = 1, activeTab = 'live';
+let dataLoaded = false;
+
+function normalizeReview(r) {
+  return {
+    ...r,
+    rating:     +(r.stars     ?? r.rating     ?? 0),
+    rel_time:   r.relative_time ?? r.rel_time ?? '',
+    first_seen: r.date      ?? r.first_seen  ?? '',
+    snap_date:  r.date      ?? r.snap_date   ?? '',
+  };
+}
 
 async function loadData() {
   const t = Date.now();
   try {
-    const [revRes, delRes] = await Promise.all([
-      fetch(`${REV_URL}?t=${t}`),
-      fetch(`${DEL_URL}?t=${t}`).catch(() => null),
-    ]);
-    if (!revRes.ok) throw new Error(`Data unavailable (${revRes.status})`);
+    const revRes = await fetch(`${REV_URL}?t=${t}`);
+    if (!revRes.ok) throw new Error(`rev.json unavailable (${revRes.status})`);
 
     const revRaw = await revRes.json();
-    liveReviews = (Array.isArray(revRaw) ? revRaw : Object.values(revRaw)).map(r => ({
-      ...r,
-      rating:     r.stars     ?? r.rating     ?? 0,
-      rel_time:   r.relative_time ?? r.rel_time ?? '',
-      first_seen: r.date      ?? r.first_seen  ?? '',
-      snap_date:  r.date      ?? r.snap_date   ?? '',
-    }));
+    liveReviews = (Array.isArray(revRaw) ? revRaw : Object.values(revRaw)).map(normalizeReview);
 
-    if (delRes && delRes.ok) {
-      const delRaw = await delRes.json();
-      deletedReviews = (Array.isArray(delRaw) ? delRaw : Object.values(delRaw)).map(r => ({
-        ...r,
-        rating:     r.stars     ?? r.rating     ?? 0,
-        rel_time:   r.relative_time ?? r.rel_time ?? '',
-        first_seen: r.date      ?? r.first_seen  ?? '',
-        snap_date:  r.date      ?? r.snap_date   ?? '',
-      }));
-    }
+    try {
+      const delRes = await fetch(`${DEL_URL}?t=${t}`);
+      if (delRes.ok) {
+        const delRaw = await delRes.json();
+        deletedReviews = (Array.isArray(delRaw) ? delRaw : Object.values(delRaw)).map(normalizeReview);
+      }
+    } catch(e) { deletedReviews = []; }
 
+    dataLoaded = true;
     buildFilters();
     showStats();
     applyFilters();
   } catch(e) {
     document.getElementById('container').innerHTML =
-      `<div class="error">❌ Could not load data.<br><small>${e.message}</small></div>`;
+      `<div class="error">❌ Could not load data.<br><small>${e.message}</small><br><br>
+       <small>Make sure you're running this via a web server, not opening the file directly.<br>
+       Try: <code>python3 -m http.server 8080</code> then open <code>http://localhost:8080</code></small></div>`;
   }
 }
 
 function buildFilters() {
   const branches = [...new Set(liveReviews.map(r=>r.branch_name))].sort();
   const agms     = [...new Set(liveReviews.map(r=>r.agm).filter(Boolean))].sort();
-  
   const bSel = document.getElementById('branch-sel');
   const aSel = document.getElementById('agm-sel');
-  
-  // Clear old options except first
   bSel.innerHTML = '<option value="">All branches</option>';
   aSel.innerHTML = '<option value="">All AGMs</option>';
-  
-  branches.forEach(b => { 
-    let o=document.createElement('option'); o.value=b; o.textContent=b; bSel.appendChild(o); 
-  });
-  agms.forEach(a => { 
-    let o=document.createElement('option'); o.value=a; o.textContent=a; aSel.appendChild(o); 
-  });
+  branches.forEach(b => { let o=document.createElement('option'); o.value=b; o.textContent=b; bSel.appendChild(o); });
+  agms.forEach(a    => { let o=document.createElement('option'); o.value=a; o.textContent=a; aSel.appendChild(o); });
 }
 
 function showStats() {
   document.getElementById('stats').style.display='flex';
   document.getElementById('s-total').textContent    = liveReviews.length.toLocaleString();
   document.getElementById('s-branches').textContent = [...new Set(liveReviews.map(r=>r.branch_name))].length;
-  
   const rated = liveReviews.filter(r=>r.rating>0);
   const avg   = rated.length ? (rated.reduce((s,r)=>s+r.rating,0)/rated.length).toFixed(1) : '—';
   document.getElementById('s-avg').textContent     = avg !== '—' ? avg+' ★' : '—';
-  
   document.getElementById('s-deleted').textContent = deletedReviews.length.toLocaleString();
   const dates = [...new Set(liveReviews.map(r=>r.snap_date).filter(Boolean))].sort().reverse();
   document.getElementById('s-date').textContent    = dates[0] || '—';
-  
   const lastDate = dates[0] || '';
   const subtitle = document.getElementById('subtitle');
   subtitle.innerHTML = `${liveReviews.length.toLocaleString()} total reviews · Scraped 4x daily`;
@@ -191,21 +182,28 @@ function switchTab(tab, el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   currentPage = 1;
-  applyFilters();
+  // Reset filters when switching tabs
+  document.getElementById('branch-sel').value = '';
+  document.getElementById('agm-sel').value    = '';
+  document.getElementById('rating-sel').value = '';
+  document.getElementById('search').value     = '';
+  document.getElementById('sort-sel').value   = 'newest';
+  if (dataLoaded) applyFilters();
 }
 
 function applyFilters() {
+  if (!dataLoaded) return;
   const branch = document.getElementById('branch-sel').value;
   const agm    = document.getElementById('agm-sel').value;
   const rating = document.getElementById('rating-sel').value;
   const sort   = document.getElementById('sort-sel').value;
   const search = document.getElementById('search').value.toLowerCase().trim();
-  const src    = activeTab==='deleted' ? deletedReviews : liveReviews;
+  const src    = activeTab === 'deleted' ? deletedReviews : liveReviews;
 
   filtered = src.filter(r => {
-    if (branch && r.branch_name!==branch) return false;
-    if (agm    && r.agm!==agm)            return false;
-    if (rating && Math.floor(r.rating)!==parseInt(rating)) return false;
+    if (branch && r.branch_name !== branch) return false;
+    if (agm    && r.agm !== agm)            return false;
+    if (rating && Math.floor(r.rating) !== parseInt(rating)) return false;
     if (search && !(
       (r.author && r.author.toLowerCase().includes(search)) ||
       (r.text   && r.text.toLowerCase().includes(search))
@@ -219,15 +217,17 @@ function applyFilters() {
   else if (sort==='lowest')  filtered.sort((a,b)=>a.rating-b.rating);
 
   currentPage = 1;
-  document.getElementById('count-line').textContent =
-    `Showing ${filtered.length} matches`;
+  document.getElementById('count-line').textContent = `Showing ${filtered.length} matches`;
   renderPage();
 }
 
 function renderPage() {
   const container = document.getElementById('container');
   if (!filtered.length) {
-    container.innerHTML = `<div class="empty">No reviews found.</div>`;
+    const msg = activeTab === 'deleted' && deletedReviews.length === 0
+      ? 'No deleted reviews found (deleted.json may be empty or missing).'
+      : 'No reviews match your filters.';
+    container.innerHTML = `<div class="empty">${msg}</div>`;
     document.getElementById('pagination').innerHTML = '';
     return;
   }
@@ -243,8 +243,6 @@ function renderPage() {
     const stars    = '★'.repeat(filled)+'☆'.repeat(empty);
     const rClass   = `tag-r${filled}`;
     const isDel    = activeTab==='deleted';
-    
-    // Check if it's a "new" review (added today)
     const todayStr = new Date().toISOString().slice(0,10);
     const isNew    = !isDel && r.snap_date === todayStr;
 
@@ -285,13 +283,13 @@ function renderPage() {
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
-function goPage(n){currentPage=n;renderPage()}
+function goPage(n){currentPage=n;renderPage();}
 function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 window.onload = loadData;
-setInterval(loadData, 300000); // Refresh data every 5 mins in memory
+setInterval(loadData, 300000);
 </script>
 </body>
 </html>
