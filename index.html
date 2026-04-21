@@ -113,19 +113,30 @@ let currentPage = 1, activeTab = 'live';
 async function loadData() {
   const t = Date.now();
   try {
-    // Append timestamp to bypass cache
     const [revRes, delRes] = await Promise.all([
       fetch(`${REV_URL}?t=${t}`),
       fetch(`${DEL_URL}?t=${t}`).catch(() => null),
     ]);
     if (!revRes.ok) throw new Error(`Data unavailable (${revRes.status})`);
-    
-    liveReviews = await revRes.json();
-    if (!Array.isArray(liveReviews)) liveReviews = [];
-    
+
+    const revRaw = await revRes.json();
+    liveReviews = (Array.isArray(revRaw) ? revRaw : Object.values(revRaw)).map(r => ({
+      ...r,
+      rating:     r.stars     ?? r.rating     ?? 0,
+      rel_time:   r.relative_time ?? r.rel_time ?? '',
+      first_seen: r.date      ?? r.first_seen  ?? '',
+      snap_date:  r.date      ?? r.snap_date   ?? '',
+    }));
+
     if (delRes && delRes.ok) {
-      deletedReviews = await delRes.json();
-      if (!Array.isArray(deletedReviews)) deletedReviews = [];
+      const delRaw = await delRes.json();
+      deletedReviews = (Array.isArray(delRaw) ? delRaw : Object.values(delRaw)).map(r => ({
+        ...r,
+        rating:     r.stars     ?? r.rating     ?? 0,
+        rel_time:   r.relative_time ?? r.rel_time ?? '',
+        first_seen: r.date      ?? r.first_seen  ?? '',
+        snap_date:  r.date      ?? r.snap_date   ?? '',
+      }));
     }
 
     buildFilters();
