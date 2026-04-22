@@ -5,60 +5,107 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sathya Reviews Explorer</title>
   <link rel="icon" type="image/webp" href="https://www.sathya.store/favicon.webp">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;50&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg:#f8fafc; --surface:#ffffff; --border:#e2e8f0;
-      --text:#1e293b; --text2:#475569; --muted:#64748b;
-      --green:#059669; --rose:#e11d48; --indigo:#4f46e5;
-      --amber:#d97706; --teal:#0891b2;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text2: #475569;
+      --muted: #64748b;
+      --green: #059669;
+      --rose: #e11d48;
+      --indigo: #4f46e5;
+      --amber: #d97706;
+      --teal: #0891b2;
     }
-    @media(prefers-color-scheme:dark){
-      :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#f1f5f9;--text2:#cbd5e1;--muted:#94a3b8;}
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 20px;
+      min-height: 100vh;
     }
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:20px;min-height:100vh}
-    .container{max-width:1100px;margin:0 auto}
-    .header{text-align:center;margin-bottom:28px}
-    .header h1{font-size:26px;font-weight:700}
-    .live-dot{display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:50%;margin-right:6px;animation:pulse 2s infinite}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-    .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
-    .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;flex:1;min-width:120px;text-align:center}
-    .stat-num{font-size:22px;font-weight:700;color:var(--indigo)}
-    .stat-label{font-size:12px;color:var(--muted);margin-top:2px}
-    .toolbar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-    select,input[type="text"]{padding:9px 13px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--surface);color:var(--text);font-family:inherit}
-    .tabs{display:flex;gap:8px;margin-bottom:16px}
-    .tab{padding:8px 18px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:600;cursor:pointer;background:var(--surface);color:var(--text2);transition:all .15s}
-    .tab.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
-    .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
-    .card.deleted{border-color:rgba(225,29,72,.25);background:rgba(225,29,72,.03)}
-    .card-header{display:flex;justify-content:space-between;align-items:flex-start}
-    .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;flex-shrink:0}
-    .meta{flex:1;margin-left:12px}
-    .author{font-weight:600;font-size:14px}
-    .branch{font-size:12px;color:var(--muted);margin-top:1px}
-    .stars-col{text-align:right;flex-shrink:0}
-    .stars{color:#f59e0b;font-size:16px;letter-spacing:-1px}
-    .time-str{font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:2px}
-    .review-text{margin:10px 0 8px;color:var(--text2);font-size:14px;line-height:1.7}
-    .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-    .tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
-    .tag-r1,.tag-r2{background:rgba(225,29,72,.1);color:var(--rose)}
-    .tag-r3{background:rgba(217,119,6,.1);color:var(--amber)}
-    .tag-r4,.tag-r5{background:rgba(5,150,105,.1);color:var(--green)}
-    .tag-date{background:rgba(79,70,229,.08);color:var(--indigo)}
-    .tag-seen{background:rgba(8,145,178,.08);color:var(--teal)}
-    .tag-deleted{background:rgba(225,29,72,.12);color:var(--rose);border:1px solid rgba(225,29,72,.2)}
-    .tag-agm{background:rgba(79,70,229,.08);color:var(--indigo)}
-    .tag-new{background:rgba(5,150,105,.15);color:var(--green);border:1px solid rgba(5,150,105,.3)}
-    .pagination{display:flex;justify-content:center;gap:6px;margin-top:16px;flex-wrap:wrap}
-    .pg{padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer;font-size:13px;color:var(--text)}
-    .pg.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
-    .empty,.loading{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px}
-    .error{text-align:center;padding:40px;color:var(--rose);font-size:14px}
-    .update-badge{display:inline-block;background:rgba(5,150,105,.1);color:var(--green);border-radius:20px;padding:2px 10px;font-size:11px;font-weight:600;margin-left:8px}
+    .container { max-width: 1100px; margin: 0 auto; }
+    .header { text-align: center; margin-bottom: 28px; }
+    .header h1 { font-size: 28px; font-weight: 700; color: var(--text); }
+    .header p { color: var(--muted); font-size: 15px; }
+    .live-dot {
+      display: inline-block; width: 8px; height: 8px;
+      background: #22c55e; border-radius: 50%; margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 18px; flex: 1; min-width: 120px; text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .stat-num { font-size: 22px; font-weight: 700; color: var(--indigo); }
+    .stat-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .toolbar {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 15px; margin-bottom: 16px;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    }
+    select, input[type="text"] {
+      padding: 10px 14px; border: 1px solid var(--border);
+      border-radius: 8px; font-size: 14px;
+      background: white; color: var(--text); font-family: inherit;
+    }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab {
+      padding: 8px 18px; border-radius: 8px;
+      border: 1px solid var(--border); font-size: 13px; font-weight: 600;
+      cursor: pointer; background: var(--surface); color: var(--text2); transition: all .15s;
+    }
+    .tab.active { background: var(--indigo); color: #fff; border-color: var(--indigo); }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px; margin-bottom: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .card.deleted { border-color: rgba(225,29,72,.25); background: rgba(225,29,72,.03); }
+    .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+    .avatar {
+      width: 42px; height: 42px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; color: #fff; font-size: 15px; flex-shrink: 0;
+    }
+    .meta { flex: 1; margin-left: 14px; }
+    .author { font-weight: 600; font-size: 15px; }
+    .branch { font-size: 13px; color: var(--muted); margin-top: 1px; }
+    .stars-col { text-align: right; flex-shrink: 0; }
+    .stars { color: #f59e0b; font-size: 18px; letter-spacing: -1px; }
+    .time-str { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 2px; }
+    .review-text { margin: 12px 0 10px; color: var(--text2); font-size: 14px; line-height: 1.7; }
+    .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .tag { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .tag-r1, .tag-r2 { background: rgba(225,29,72,.1); color: var(--rose); }
+    .tag-r3 { background: rgba(217,119,6,.1); color: var(--amber); }
+    .tag-r4, .tag-r5 { background: rgba(5,150,105,.1); color: var(--green); }
+    .tag-date { background: rgba(79,70,229,.08); color: var(--indigo); }
+    .tag-seen { background: rgba(8,145,178,.08); color: var(--teal); }
+    .tag-deleted { background: rgba(225,29,72,.12); color: var(--rose); border: 1px solid rgba(225,29,72,.2); }
+    .tag-new { background: rgba(5,150,105,.15); color: var(--green); border: 1px solid rgba(5,150,105,.3); }
+    .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 16px; flex-wrap: wrap; }
+    .pg {
+      padding: 7px 14px; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--surface);
+      cursor: pointer; font-size: 13px; color: var(--text);
+    }
+    .pg.active { background: var(--indigo); color: #fff; border-color: var(--indigo); }
+    .empty, .loading { text-align: center; padding: 80px 20px; color: var(--muted); font-size: 14px; }
+    .error { text-align: center; padding: 40px; color: var(--rose); font-size: 14px; }
+    .count-line { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+    .update-badge {
+      display: inline-block; background: rgba(5,150,105,.1); color: var(--green);
+      border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 600; margin-left: 8px;
+    }
   </style>
 </head>
 <body>
@@ -183,7 +230,6 @@ function switchTab(tab, el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   currentPage = 1;
-  // Reset filters when switching tabs
   document.getElementById('branch-sel').value = '';
   document.getElementById('agm-sel').value    = '';
   document.getElementById('rating-sel').value = '';
