@@ -142,6 +142,8 @@
       <option value="highest">Highest rating</option>
       <option value="lowest">Lowest rating</option>
     </select>
+    <input type="date" id="date-from" onchange="applyFilters()" title="From date" style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:white;color:var(--text);font-family:inherit;">
+    <input type="date" id="date-to"   onchange="applyFilters()" title="To date"   style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:white;color:var(--text);font-family:inherit;">
     <input type="text" id="search" placeholder="Search author or review…" oninput="applyFilters()" style="flex:1;min-width:180px">
   </div>
 
@@ -235,6 +237,8 @@ function switchTab(tab, el) {
   document.getElementById('rating-sel').value = '';
   document.getElementById('search').value     = '';
   document.getElementById('sort-sel').value   = 'newest';
+  document.getElementById('date-from').value = '';
+  document.getElementById('date-to').value   = '';
   if (dataLoaded) applyFilters();
 }
 
@@ -245,6 +249,8 @@ function applyFilters() {
   const rating = document.getElementById('rating-sel').value;
   const sort   = document.getElementById('sort-sel').value;
   const search = document.getElementById('search').value.toLowerCase().trim();
+  const dateFrom = document.getElementById('date-from').value; // e.g. "2025-01-01"
+  const dateTo   = document.getElementById('date-to').value;
   const src    = activeTab === 'deleted' ? deletedReviews : liveReviews;
 
   filtered = src.filter(r => {
@@ -255,6 +261,9 @@ function applyFilters() {
       (r.author && r.author.toLowerCase().includes(search)) ||
       (r.text   && r.text.toLowerCase().includes(search))
     )) return false;
+    // ↓ ADD THESE TWO LINES
+    if (dateFrom && (r.first_seen || '') < dateFrom) return false;
+    if (dateTo   && (r.first_seen || '') > dateTo)   return false;
     return true;
   });
 
