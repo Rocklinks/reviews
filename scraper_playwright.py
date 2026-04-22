@@ -124,7 +124,7 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 except Exception:
                     text = ""
 
-                review_id = make_review_id(branch_id, author, rel_time, stars)
+                review_id = make_review_id(branch_id, author, text, stars, review_date)
                 reviews.append({
                     "review_id":   review_id,
                     "branch_id":   branch_id,

@@ -158,7 +158,7 @@ def parse_reviews_from_source(source: str, branch_id: int, branch_name: str,
 
         # Try to get star rating nearby (look for integer 1-5 in vicinity)
         stars = 0
-        review_id = make_review_id(branch_id, author, rel_time, stars)
+        review_id = make_review_id(branch_id, author, "", stars, review_date)
         reviews.append({
             "review_id":     review_id,
             "branch_id":     branch_id,

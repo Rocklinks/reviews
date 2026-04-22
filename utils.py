@@ -54,9 +54,17 @@ def parse_relative_time(text: str) -> bool:
     return False
 
 
-def make_review_id(branch_id: int, author: str, relative_time: str, stars: int) -> str:
-    """Stable hash used as a dedup key. Does NOT include the date."""
-    raw = f"{branch_id}||{author}||{relative_time}||{stars}"
+def make_review_id(branch_id: int, author: str, text: str, stars: int, date: str) -> str:
+    """
+    Stable hash used as a dedup key.
+    Uses: branch_id + author (name only, strip profile noise) + text + stars + date.
+    
+    IMPORTANT: relative_time ("4 hours ago", "7 hours ago"...) is intentionally
+    EXCLUDED because it changes every run and would create duplicate entries for
+    the same real review scraped at different times of day.
+    """
+    author_clean = author.split("\n")[0].strip()
+    raw = f"{branch_id}||{author_clean}||{text}||{stars}||{date}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
