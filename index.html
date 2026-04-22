@@ -81,7 +81,6 @@
     .branch { font-size: 13px; color: var(--muted); margin-top: 1px; }
     .stars-col { text-align: right; flex-shrink: 0; }
     .stars { color: #f59e0b; font-size: 18px; letter-spacing: -1px; }
-    .time-str { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 2px; }
     .review-text { margin: 12px 0 10px; color: var(--text2); font-size: 14px; line-height: 1.7; }
     .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
     .tag { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -142,8 +141,18 @@
       <option value="highest">Highest rating</option>
       <option value="lowest">Lowest rating</option>
     </select>
-    <input type="date" id="date-from" onchange="applyFilters()" title="From date" style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:white;color:var(--text);font-family:inherit;">
-    <input type="date" id="date-to"   onchange="applyFilters()" title="To date"   style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:white;color:var(--text);font-family:inherit;">
+    <!-- Date / Month / Year filters -->
+    <select id="year-sel" onchange="applyFilters()"><option value="">All years</option></select>
+    <select id="month-sel" onchange="applyFilters()">
+      <option value="">All months</option>
+      <option value="01">January</option><option value="02">February</option>
+      <option value="03">March</option><option value="04">April</option>
+      <option value="05">May</option><option value="06">June</option>
+      <option value="07">July</option><option value="08">August</option>
+      <option value="09">September</option><option value="10">October</option>
+      <option value="11">November</option><option value="12">December</option>
+    </select>
+    <select id="day-sel" onchange="applyFilters()"><option value="">All dates</option></select>
     <input type="text" id="search" placeholder="Search author or review…" oninput="applyFilters()" style="flex:1;min-width:180px">
   </div>
 
@@ -203,12 +212,26 @@ async function loadData() {
 function buildFilters() {
   const branches = [...new Set(liveReviews.map(r=>r.branch_name))].sort();
   const agms     = [...new Set(liveReviews.map(r=>r.agm).filter(Boolean))].sort();
+
+  // Build year & day dropdowns from actual data
+  const allDates = [...liveReviews, ...deletedReviews].map(r=>r.first_seen).filter(Boolean);
+  const years = [...new Set(allDates.map(d=>d.slice(0,4)))].sort().reverse();
+  const days  = [...new Set(allDates.map(d=>d.slice(8,10)))].sort((a,b)=>+a-+b);
+
   const bSel = document.getElementById('branch-sel');
   const aSel = document.getElementById('agm-sel');
+  const ySel = document.getElementById('year-sel');
+  const dSel = document.getElementById('day-sel');
+
   bSel.innerHTML = '<option value="">All branches</option>';
   aSel.innerHTML = '<option value="">All AGMs</option>';
+  ySel.innerHTML = '<option value="">All years</option>';
+  dSel.innerHTML = '<option value="">All dates</option>';
+
   branches.forEach(b => { let o=document.createElement('option'); o.value=b; o.textContent=b; bSel.appendChild(o); });
   agms.forEach(a    => { let o=document.createElement('option'); o.value=a; o.textContent=a; aSel.appendChild(o); });
+  years.forEach(y   => { let o=document.createElement('option'); o.value=y; o.textContent=y; ySel.appendChild(o); });
+  days.forEach(d    => { let o=document.createElement('option'); o.value=d; o.textContent=d; dSel.appendChild(o); });
 }
 
 function showStats() {
@@ -237,8 +260,9 @@ function switchTab(tab, el) {
   document.getElementById('rating-sel').value = '';
   document.getElementById('search').value     = '';
   document.getElementById('sort-sel').value   = 'newest';
-  document.getElementById('date-from').value = '';
-  document.getElementById('date-to').value   = '';
+  document.getElementById('year-sel').value   = '';
+  document.getElementById('month-sel').value  = '';
+  document.getElementById('day-sel').value    = '';
   if (dataLoaded) applyFilters();
 }
 
@@ -249,8 +273,9 @@ function applyFilters() {
   const rating = document.getElementById('rating-sel').value;
   const sort   = document.getElementById('sort-sel').value;
   const search = document.getElementById('search').value.toLowerCase().trim();
-  const dateFrom = document.getElementById('date-from').value; // e.g. "2025-01-01"
-  const dateTo   = document.getElementById('date-to').value;
+  const year   = document.getElementById('year-sel').value;   // e.g. "2025"
+  const month  = document.getElementById('month-sel').value;  // e.g. "03"
+  const day    = document.getElementById('day-sel').value;    // e.g. "15"
   const src    = activeTab === 'deleted' ? deletedReviews : liveReviews;
 
   filtered = src.filter(r => {
@@ -261,9 +286,10 @@ function applyFilters() {
       (r.author && r.author.toLowerCase().includes(search)) ||
       (r.text   && r.text.toLowerCase().includes(search))
     )) return false;
-    // ↓ ADD THESE TWO LINES
-    if (dateFrom && (r.first_seen || '') < dateFrom) return false;
-    if (dateTo   && (r.first_seen || '') > dateTo)   return false;
+    const d = r.first_seen || '';
+    if (year  && d.slice(0,4)  !== year)  return false;
+    if (month && d.slice(5,7)  !== month) return false;
+    if (day   && d.slice(8,10) !== day)   return false;
     return true;
   });
 
@@ -314,7 +340,6 @@ function renderPage() {
         </div>
         <div class="stars-col">
           <div class="stars">${stars}</div>
-          <div class="time-str">${esc(r.rel_time||r.time||'')}</div>
         </div>
       </div>
       ${r.text?`<div class="review-text">${esc(r.text)}</div>`:''}
