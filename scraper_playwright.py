@@ -1,33 +1,29 @@
 """
 scraper_playwright.py — Method 1: Playwright-based Google Maps review scraper.
-Opens Brave browser (falls back to Chromium), navigates to each branch,
-scrapes reviews from the last 23 hours, saves to rev.json.
+Opens Brave (falls back to Chromium), 3 tabs at a time per batch.
+
+Deletion logic: after each branch is scraped, compare freshly-scraped IDs
+against what is stored in rev.json for that branch on the same date.
+Reviews no longer visible on Google -> saved to deleted.json.
 """
 
 import sys
-import json
 import time
 import datetime
 from pathlib import Path
 
-# Local imports
 from branches import BRANCHES, AGM_MAP
 from utils import (
     log, get_review_date, parse_relative_time, make_review_id,
     load_reviews, save_reviews, add_reviews, maps_url,
-    should_check_deletions, record_deletion_check,
-    find_deleted_reviews, save_newly_deleted
+    check_deletions_for_branch, move_to_deleted,
 )
 
-# ─── Brave binary locations by OS ─────────────────────────────────────────────
 BRAVE_PATHS = [
-    # Linux (GitHub Actions / Ubuntu)
     "/usr/bin/brave-browser",
     "/usr/bin/brave",
     "/opt/brave.com/brave/brave",
-    # macOS
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    # Windows
     r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
     r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
 ]
@@ -40,20 +36,18 @@ def find_brave() -> str | None:
     return None
 
 
-# ─── Per-branch scraping ───────────────────────────────────────────────────────
 def scrape_branch_playwright(page, branch_id: int, branch_name: str,
-                              place_id: str, review_date: str) -> list[dict]:
-    """Navigate to a branch's Google Maps page and collect recent reviews."""
+                              place_id: str, review_date: str) -> list:
     reviews = []
-    url = maps_url(place_id)
     agm = AGM_MAP.get(branch_name, "Unknown")
+    url = maps_url(place_id)
 
     try:
-        log(f"  [playwright] → {branch_name} ({place_id})")
+        log(f"  [playwright] -> {branch_name} ({place_id})")
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
 
-        # Click the "Reviews" tab if present
+        # Click Reviews tab
         try:
             reviews_tab = page.locator('button[aria-label*="Reviews"], [data-tab-index="1"]').first
             if reviews_tab.is_visible(timeout=5000):
@@ -81,30 +75,26 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
             page.wait_for_timeout(1500)
 
         # Extract review cards
-        # Google Maps uses JDIV/aria structure; these selectors target review blocks
         review_cards = page.locator('div[data-review-id], div[jscontroller][class*="review"]').all()
-
-        # Fallback: grab by relative time text presence
         if not review_cards:
             review_cards = page.locator('div[class*="MyEned"], div[jslog*="review"]').all()
 
         for card in review_cards:
             try:
-                # Relative time
-                rel_time_el = card.locator('span[class*="dehysf"], .rsqaWe, span[aria-label*="ago"], span[aria-label*="now"]').first
+                rel_time_el = card.locator(
+                    'span[class*="dehysf"], .rsqaWe, span[aria-label*="ago"], span[aria-label*="now"]'
+                ).first
                 rel_time = rel_time_el.inner_text(timeout=2000).strip()
 
                 if not parse_relative_time(rel_time):
                     continue
 
-                # Author name
                 try:
                     author_el = card.locator('div[class*="d4r55"], .WNxzHc button, a.al6Kxe').first
                     author = author_el.inner_text(timeout=2000).strip()
                 except Exception:
                     author = "Anonymous"
 
-                # Star rating
                 try:
                     stars_el = card.locator('span[aria-label*="star"]').first
                     stars_label = stars_el.get_attribute("aria-label", timeout=2000) or ""
@@ -112,9 +102,7 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 except Exception:
                     stars = 0
 
-                # Review text
                 try:
-                    # Expand "More" if present
                     more_btn = card.locator('button[aria-label*="See more"], button.w8nwRe').first
                     if more_btn.is_visible(timeout=1000):
                         more_btn.click()
@@ -126,23 +114,22 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
 
                 review_id = make_review_id(branch_id, author, text, stars, review_date)
                 reviews.append({
-                    "review_id":   review_id,
-                    "branch_id":   branch_id,
-                    "branch_name": branch_name,
-                    "place_id":    place_id,
-                    "agm":         agm,
-                    "author":      author,
-                    "stars":       stars,
+                    "review_id":     review_id,
+                    "branch_id":     branch_id,
+                    "branch_name":   branch_name,
+                    "place_id":      place_id,
+                    "agm":           agm,
+                    "author":        author,
+                    "stars":         stars,
                     "relative_time": rel_time,
-                    "text":        text,
-                    "date":        review_date,
-                    "scraped_at":  datetime.datetime.now().isoformat(),
-                    "method":      "playwright",
+                    "text":          text,
+                    "date":          review_date,
+                    "scraped_at":    datetime.datetime.now().isoformat(),
+                    "method":        "playwright",
                 })
 
             except Exception as e:
                 log(f"    [playwright] card parse error: {e}")
-                continue
 
     except Exception as e:
         log(f"  [playwright] ERROR on {branch_name}: {e}")
@@ -151,12 +138,7 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
     return reviews
 
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
-def run(ist_hour: int | None = None) -> list[dict]:
-    """
-    Run the Playwright scraper for all branches.
-    Returns list of new review dicts that were actually added.
-    """
+def run(ist_hour: int | None = None) -> list:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -172,9 +154,9 @@ def run(ist_hour: int | None = None) -> list[dict]:
     brave_path = find_brave()
     all_new_reviews = []
 
-    # Decide whether to do a deletion check this run
-    do_deletion_check = should_check_deletions()
-    all_scraped_ids: set[str] = set()
+    # Load existing reviews ONCE before the scrape loop
+    existing = load_reviews()
+    total_deleted = 0
 
     with sync_playwright() as pw:
         launch_kwargs = {
@@ -201,41 +183,44 @@ def run(ist_hour: int | None = None) -> list[dict]:
             ),
             locale="en-US",
         )
-        # Open 3 tabs
         pages = [context.new_page() for _ in range(3)]
 
-        # Process branches in batches of 3 (one per tab)
         for i in range(0, len(BRANCHES), 3):
             batch = BRANCHES[i:i+3]
-            batch_reviews = []
             for tab_idx, (bid, name, pid) in enumerate(batch):
                 page = pages[tab_idx]
                 revs = scrape_branch_playwright(page, bid, name, pid, review_date)
-                batch_reviews.extend(revs)
-                for r in revs:
-                    all_scraped_ids.add(r["review_id"])
+
+                # ── Per-branch dedup + deletion check ─────────────────────────
+                scraped_ids = {r["review_id"] for r in revs}
+
+                # 1. Add new reviews to existing (dedup by stable ID)
+                existing, added = add_reviews(existing, revs)
+                all_new_reviews.extend(revs)
+
+                # 2. Deletion check: stored reviews for this branch+date
+                #    that are NOT in this run's scraped IDs = deleted
+                deleted = check_deletions_for_branch(bid, scraped_ids, review_date, existing)
+                if deleted:
+                    n = move_to_deleted(deleted, existing)   # moves: out of rev, into deleted
+                    total_deleted += n
+                    if n:
+                        log(f"  [playwright] {name}: {n} reviews moved to deleted.json")
+                # ──────────────────────────────────────────────────────────────
+
                 time.sleep(1)
-            all_new_reviews.extend(batch_reviews)
 
         browser.close()
 
-    # Merge into rev.json
-    existing = load_reviews()
-    existing, added = add_reviews(existing, all_new_reviews)
+    # Save final rev.json once after all branches
     save_reviews(existing)
-    log(f"[playwright] Done. {added} new reviews added to rev.json")
-
-    # Deletion check
-    if do_deletion_check and all_scraped_ids:
-        log("[playwright] Running deletion check…")
-        deleted = find_deleted_reviews(list(all_scraped_ids), existing)
-        n = save_newly_deleted(deleted)
-        record_deletion_check()
-        log(f"[playwright] Deletion check: {n} newly deleted reviews saved")
+    log(f"[playwright] Done. {len(all_new_reviews)} scraped, "
+        f"{len(all_new_reviews) - sum(1 for r in all_new_reviews if r['review_id'] in existing)} new, "
+        f"{total_deleted} deleted detected")
 
     return all_new_reviews
 
 
 if __name__ == "__main__":
     results = run()
-    print(f"Total reviews scraped: {len(results)}")
+    print(f"Total reviews scraped this run: {len(results)}")

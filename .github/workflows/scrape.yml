@@ -1,140 +1,88 @@
 name: Sathya Agency Review Scraper
 
+# ─── Why these exact cron times? ──────────────────────────────────────────────
+# GitHub Actions cron can run 15–90 minutes late under high load.
+# To ensure each job actually fires at the correct IST time, we subtract
+# 90 minutes from the intended IST time when converting to UTC.
+#
+# Formula:  UTC = IST_target − 5h30m − 90min_buffer
+#
+# IST target  →  subtract 90min  →  UTC cron
+# ──────────────────────────────────────────
+#  06:00 IST  →  04:30 IST  →  23:00 UTC (prev day)
+#  12:00 IST  →  10:30 IST  →  05:00 UTC
+#  18:00 IST  →  16:30 IST  →  11:00 UTC
+#  00:00 IST  →  22:30 IST  →  17:00 UTC (prev day)
+#
+# The IST hour passed to main.py is HARDCODED per job (not auto-detected),
+# so it is always correct regardless of when the runner actually starts.
+# ──────────────────────────────────────────────────────────────────────────────
+
 on:
   schedule:
-    # All times in UTC. IST = UTC+5:30
-    # 06:00 IST = 00:30 UTC
-    - cron: "30 0 * * *"
-    # 12:00 IST = 06:30 UTC
-    - cron: "30 6 * * *"
-    # 18:00 IST = 12:30 UTC
-    - cron: "30 12 * * *"
-    # 00:00 IST = 18:30 UTC (previous day midnight run)
-    - cron: "30 18 * * *"
+    - cron: "0 23 * * *"    # fires ~06:00 IST  (with 90-min buffer)
+    - cron: "0 5  * * *"    # fires ~12:00 IST
+    - cron: "0 11 * * *"    # fires ~18:00 IST
+    - cron: "0 17 * * *"    # fires ~00:00 IST (midnight)
 
   workflow_dispatch:
     inputs:
-      hour:
-        description: "Override IST hour (0, 6, 12, 18)"
-        required: false
-        default: ""
+      ist_hour:
+        description: "IST hour to simulate (0, 6, 12, or 18)"
+        required: true
+        default: "6"
+        type: choice
+        options: ["0", "6", "12", "18"]
       method:
-        description: "Force scraper method (playwright / selenium / pyautogui)"
+        description: "Force a specific scraper method (leave blank for auto)"
         required: false
         default: ""
 
 jobs:
-  scrape:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+  # ── 06:00 IST run ────────────────────────────────────────────────────────────
+  scrape-6am:
+    name: "Scrape — 6:00 AM IST"
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '6' ||
+      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 23')
+    uses: ./.github/workflows/_scrape_job.yml
+    with:
+      ist_hour: "6"
+      method: ${{ github.event.inputs.method || '' }}
+    secrets: inherit
 
-    permissions:
-      contents: write   # needed to commit rev.json / deleted.json back
+  # ── 12:00 IST run ────────────────────────────────────────────────────────────
+  scrape-12pm:
+    name: "Scrape — 12:00 PM IST"
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '12' ||
+      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 5')
+    uses: ./.github/workflows/_scrape_job.yml
+    with:
+      ist_hour: "12"
+      method: ${{ github.event.inputs.method || '' }}
+    secrets: inherit
 
-    steps:
-      # ── 1. Checkout repo ────────────────────────────────────────────────────
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+  # ── 18:00 IST run ────────────────────────────────────────────────────────────
+  scrape-6pm:
+    name: "Scrape — 6:00 PM IST"
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '18' ||
+      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 11')
+    uses: ./.github/workflows/_scrape_job.yml
+    with:
+      ist_hour: "18"
+      method: ${{ github.event.inputs.method || '' }}
+    secrets: inherit
 
-      # ── 2. Set up Python ────────────────────────────────────────────────────
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      # ── 3. Install Python dependencies ──────────────────────────────────────
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      # ── 4. Install Playwright browsers ──────────────────────────────────────
-      - name: Install Playwright Chromium
-        run: python -m playwright install chromium --with-deps
-        continue-on-error: true   # don't block if playwright install fails
-
-      # ── 5. Install Brave (for Selenium / PyAutoGUI fallback) ────────────────
-      - name: Install Brave browser
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y apt-transport-https curl
-          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
-            https://brave-browser-apt-release.s3.brave.com/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-          sudo apt-get update -qq
-          sudo apt-get install -y brave-browser
-        continue-on-error: true
-
-      # ── 6. Install Xvfb (virtual display for PyAutoGUI) ─────────────────────
-      - name: Install Xvfb and X utilities
-        run: |
-          sudo apt-get install -y xvfb xdotool
-        continue-on-error: true
-
-      # ── 7. Start Xvfb virtual display ───────────────────────────────────────
-      - name: Start Xvfb
-        run: |
-          Xvfb :99 -screen 0 1280x900x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
-        continue-on-error: true
-
-      # ── 8. Install ChromeDriver (for Selenium) ───────────────────────────────
-      - name: Install ChromeDriver
-        run: |
-          # webdriver-manager handles this automatically, but ensure chromium is present
-          sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        continue-on-error: true
-
-      # ── 9. Determine IST hour from cron schedule ─────────────────────────────
-      - name: Determine IST hour
-        id: ist_hour
-        run: |
-          if [ -n "${{ github.event.inputs.hour }}" ]; then
-            echo "hour=${{ github.event.inputs.hour }}" >> $GITHUB_OUTPUT
-          else
-            # Calculate IST hour from current UTC time
-            UTC_HOUR=$(date -u +%H)
-            UTC_MIN=$(date -u +%M)
-            IST_TOTAL=$(( UTC_HOUR * 60 + UTC_MIN + 330 ))
-            IST_HOUR=$(( (IST_TOTAL / 60) % 24 ))
-            echo "hour=${IST_HOUR}" >> $GITHUB_OUTPUT
-            echo "Detected IST hour: ${IST_HOUR}"
-          fi
-
-      # ── 10. Run the scraper ──────────────────────────────────────────────────
-      - name: Run review scraper
-        env:
-          DISPLAY: ":99"
-        run: |
-          HOUR="${{ steps.ist_hour.outputs.hour }}"
-          METHOD="${{ github.event.inputs.method }}"
-
-          CMD="python main.py --hour ${HOUR}"
-          if [ -n "${METHOD}" ]; then
-            CMD="${CMD} --method ${METHOD}"
-          fi
-
-          echo "Running: ${CMD}"
-          ${CMD}
-
-      # ── 11. Commit updated JSON files back to repo ───────────────────────────
-      - name: Commit & push results
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Pull latest to avoid conflicts (another job may have pushed)
-          git pull --rebase origin main || true
-
-          git add rev.json deleted.json .deletion_meta.json || true
-          git diff --staged --quiet && echo "No changes to commit." && exit 0
-
-          RUN_LABEL=$(date -u +"%Y-%m-%d %H:%M UTC")
-          git commit -m "chore: review scrape — ${RUN_LABEL} [skip ci]"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # ── 00:00 IST run (midnight) ─────────────────────────────────────────────────
+  scrape-midnight:
+    name: "Scrape — 12:00 AM IST (midnight)"
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '0' ||
+      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 17')
+    uses: ./.github/workflows/_scrape_job.yml
+    with:
+      ist_hour: "0"
+      method: ${{ github.event.inputs.method || '' }}
+    secrets: inherit
