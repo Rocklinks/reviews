@@ -149,7 +149,7 @@ def scrape_branch_selenium(driver, branch_id: int, branch_name: str,
                 except Exception:
                     text = ""
 
-                review_id = make_review_id(branch_id, author, text, stars, review_date)
+                review_id = make_review_id(branch_id, author, text, stars)
                 reviews.append({
                     "review_id": review_id, "branch_id": branch_id,
                     "branch_name": branch_name, "place_id": place_id,
@@ -202,7 +202,7 @@ def run(ist_hour: int | None = None) -> list:
                 existing, _ = add_reviews(existing, revs)
                 all_new_reviews.extend(revs)
 
-                deleted = check_deletions_for_branch(bid, scraped_ids, review_date, existing)
+                deleted = check_deletions_for_branch(bid, scraped_ids, existing)
                 if deleted:
                     n = move_to_deleted(deleted, existing)
                     total_deleted += n

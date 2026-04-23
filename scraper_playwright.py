@@ -112,7 +112,7 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 except Exception:
                     text = ""
 
-                review_id = make_review_id(branch_id, author, text, stars, review_date)
+                review_id = make_review_id(branch_id, author, text, stars)
                 reviews.append({
                     "review_id":     review_id,
                     "branch_id":     branch_id,
@@ -200,7 +200,7 @@ def run(ist_hour: int | None = None) -> list:
 
                 # 2. Deletion check: stored reviews for this branch+date
                 #    that are NOT in this run's scraped IDs = deleted
-                deleted = check_deletions_for_branch(bid, scraped_ids, review_date, existing)
+                deleted = check_deletions_for_branch(bid, scraped_ids, existing)
                 if deleted:
                     n = move_to_deleted(deleted, existing)   # moves: out of rev, into deleted
                     total_deleted += n

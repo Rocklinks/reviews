@@ -1,11 +1,5 @@
 """
 utils.py — Shared utilities for Sathya Agency review scraper.
-Handles: date assignment, deduplication, JSON I/O, deletion detection.
-
-Deletion logic (per-run, per-branch):
-  After each branch is scraped, we compare the freshly-scraped review IDs
-  for that branch against what is stored in rev.json for that same branch
-  on the same date. Any stored review no longer visible = deleted.
 """
 
 import json
@@ -14,20 +8,18 @@ import hashlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR     = Path(__file__).parent
 REV_FILE     = BASE_DIR / "rev.json"
 DELETED_FILE = BASE_DIR / "deleted.json"
 
-# ─── IST hour labels (for logging only) ───────────────────────────────────────
 RUNTIME_LABELS = {6: "morning", 12: "afternoon", 18: "evening", 0: "midnight"}
 
 
 def get_review_date(ist_hour: int) -> str:
     """
-    Return the date string (YYYY-MM-DD) to stamp on a scraped review.
-      - 12 AM run (ist_hour == 0)  -> previous day's date
-      - All other runs (6, 12, 18) -> today's date
+    Date to stamp on each scraped review.
+    Midnight run (ist_hour=0) uses yesterday's date because those reviews
+    were posted before midnight.
     """
     today = date.today()
     if ist_hour == 0:
@@ -36,10 +28,7 @@ def get_review_date(ist_hour: int) -> str:
 
 
 def parse_relative_time(text: str) -> bool:
-    """
-    Return True if the relative-time string is within the last ~23 hours.
-    Patterns: 'Just now', 'X minute(s) ago', 'X hour(s) ago'
-    """
+    """Return True if relative-time string is within last ~23 hours."""
     if not text:
         return False
     text = text.strip().lower()
@@ -55,17 +44,22 @@ def parse_relative_time(text: str) -> bool:
     return False
 
 
-def make_review_id(branch_id: int, author: str, text: str, stars: int, rev_date: str) -> str:
+def make_review_id(branch_id: int, author: str, text: str, stars: int) -> str:
     """
-    Stable content-hash used as a dedup key across all 4 daily runs.
+    Stable content-hash — the identity of a review across ALL runs and dates.
 
-    Fields used:  branch_id | author (name only) | text | stars | rev_date
-    NOT included: relative_time — it increments every run ("4 hours ago" ->
-                  "7 hours ago") and would generate a new ID each time for
-                  the same real review, causing duplicates.
+    Fields: branch_id | author (name only) | text | stars
+
+    BUG FIX: `rev_date` was previously included in the hash. This caused
+    the same review posted on Day1 to get a NEW id on Day2's 6am run
+    (when it still appears as '20 hours ago'), creating cross-day duplicates.
+
+    Date is intentionally EXCLUDED from the hash. The same real review
+    always gets the same ID regardless of which run or which day scraped it.
+    The `date` field is still stored on the record for display purposes.
     """
     author_clean = author.split("\n")[0].strip()
-    raw = f"{branch_id}||{author_clean}||{text}||{stars}||{rev_date}"
+    raw = f"{branch_id}||{author_clean}||{text}||{stars}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -100,11 +94,11 @@ def save_deleted(data: dict) -> None:
 
 
 # ─── Deduplication ────────────────────────────────────────────────────────────
-def add_reviews(existing: dict, new_reviews: list) -> tuple[dict, int]:
+def add_reviews(existing: dict, new_reviews: list) -> tuple:
     """
-    Merge new_reviews into existing rev.json dict (keyed by stable review_id).
-    Same real review scraped at 6am, 12pm, 6pm, midnight -> same ID -> stored once.
-    Returns (updated_dict, count_of_newly_added).
+    Merge new_reviews into existing rev.json dict.
+    Same review scraped across multiple runs/days = same hash = stored once.
+    Returns (updated_dict, count_added).
     """
     added = 0
     for rev in new_reviews:
@@ -115,45 +109,50 @@ def add_reviews(existing: dict, new_reviews: list) -> tuple[dict, int]:
     return existing, added
 
 
-# ─── Deletion detection (per-branch, per-run) ─────────────────────────────────
+# ─── Deletion detection ───────────────────────────────────────────────────────
 def check_deletions_for_branch(
     branch_id: int,
     scraped_ids_this_run: set,
-    rev_date: str,
-    existing: dict,
+    rev_data: dict,
 ) -> list:
     """
-    For a single branch: compare what we just scraped against what is
-    stored in rev.json for that branch on the same date.
+    Detect deleted reviews for a single branch.
 
-    How it works:
-      stored = all reviews in rev.json with branch_id=X AND date=rev_date
-      If a stored review ID is NOT in scraped_ids_this_run
-          -> Google Maps no longer shows it -> mark as deleted
+    BUG FIX: Previous version filtered stored reviews by date (date=rev_date).
+    This meant yesterday's reviews (stored under yesterday's date) were never
+    checked against today's scrape → deletions never detected.
 
-    Why per-branch?
-      We only compare within the same branch so a review for Branch A
-      is never falsely flagged because Branch B was scraped and didn't see it.
+    CORRECT LOGIC:
+    - Filter stored reviews for this branch by `scraped_at` within last 25 hours.
+      Why 25h? We scrape up to 23h-old reviews. A review scraped at the previous
+      run is at most ~6h old (run interval). 25h covers all reviews that SHOULD
+      still be visible on Google Maps right now.
+    - If such a "recently scraped" review is NOT in today's scraped_ids → deleted.
+    - If scraped_ids is empty (scrape failed) → skip, no false positives.
 
-    Why same date?
-      We only compare reviews from the same calendar date, so reviews from
-      yesterday or earlier are never flagged as deleted.
-
-    NOTE: Only flag a deletion if we scraped at least 1 review for that branch
-    this run. If we got 0 (scrape failed), we skip to avoid false positives.
+    Per-branch isolation: only compares within branch_id, so Branch A's reviews
+    are never flagged when Branch B is scraped.
     """
     if not scraped_ids_this_run:
-        # Scrape failed for this branch — don't flag anything as deleted
         return []
 
-    stored_for_branch = {
-        rid: rev
-        for rid, rev in existing.items()
-        if rev.get("branch_id") == branch_id and rev.get("date") == rev_date
-    }
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=25)
+
+    # Find stored reviews for this branch scraped within the last 25 hours
+    recently_stored = {}
+    for rid, rev in rev_data.items():
+        if rev.get("branch_id") != branch_id:
+            continue
+        try:
+            scraped_at = datetime.fromisoformat(rev["scraped_at"])
+        except (KeyError, ValueError):
+            continue
+        if scraped_at >= cutoff:
+            recently_stored[rid] = rev
 
     deleted = []
-    for rid, rev in stored_for_branch.items():
+    for rid, rev in recently_stored.items():
         if rid not in scraped_ids_this_run:
             deleted.append({
                 **rev,
@@ -164,42 +163,30 @@ def check_deletions_for_branch(
 
 def move_to_deleted(deleted_reviews: list, rev_data: dict) -> int:
     """
-    MOVE deleted reviews from rev.json -> deleted.json.
-
-    Q1 fix: reviews are REMOVED from rev_data (rev.json) and ADDED to
-    deleted.json. After this call the review exists only in deleted.json,
-    not in both files.
-
-    Q2: dedup is enforced — a review already in deleted.json is never
-    added again (it was already moved in a previous run).
-
-    Args:
-        deleted_reviews : list of review dicts detected as deleted
-        rev_data        : the live rev.json dict (mutated in-place)
-
-    Returns count of reviews actually moved (newly added to deleted.json).
+    MOVE deleted reviews: remove from rev_data (rev.json) → add to deleted.json.
+    Dedup enforced — a review already in deleted.json is never added again.
+    Returns count actually moved.
     """
     existing_deleted = load_deleted()
     moved = 0
     for rev in deleted_reviews:
         rid = rev["review_id"]
-        # Add to deleted.json (dedup — skip if already there)
         if rid not in existing_deleted:
             existing_deleted[rid] = rev
             moved += 1
-        # Always remove from rev.json, whether it was newly moved or not
+        # Always remove from rev.json even if already in deleted.json
         rev_data.pop(rid, None)
     if moved:
         save_deleted(existing_deleted)
     return moved
 
 
-# ─── Google Maps URL builder ──────────────────────────────────────────────────
+# ─── Google Maps URL ──────────────────────────────────────────────────────────
 def maps_url(place_id: str) -> str:
     return f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
 
-# ─── Logging helper ───────────────────────────────────────────────────────────
+# ─── Logging ──────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
