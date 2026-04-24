@@ -201,6 +201,7 @@ def run(ist_hour: int | None = None) -> list:
 
                 # 1. Add new reviews to existing (dedup by stable ID)
                 existing, added = add_reviews(existing, revs)
+                total_added += added
                 all_new_reviews.extend(revs)
 
                 # 2. Deletion check: stored reviews for this branch+date
@@ -219,9 +220,9 @@ def run(ist_hour: int | None = None) -> list:
 
     # Save final rev.json once after all branches
     save_reviews(existing)
-    log(f"[playwright] Done. {len(all_new_reviews)} scraped, "
-        f"{len(all_new_reviews) - sum(1 for r in all_new_reviews if r['review_id'] in existing)} new, "
-        f"{total_deleted} deleted detected")
+    log(f"[playwright] Done. {len(all_new_reviews)} scraped this run, "
+        f"{total_added} new added to rev.json, "
+        f"{total_deleted} moved to deleted.json")
 
     return all_new_reviews
 

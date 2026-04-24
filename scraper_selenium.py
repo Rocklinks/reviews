@@ -183,6 +183,8 @@ def run(ist_hour: int | None = None) -> list:
     log(f"[selenium] Starting. IST hour={ist_hour}, review_date={review_date}")
 
     all_new_reviews = []
+    total_added = 0
+    total_added = 0
     total_deleted = 0
     existing = load_reviews()
 
@@ -221,7 +223,9 @@ def run(ist_hour: int | None = None) -> list:
             except Exception: pass
 
     save_reviews(existing)
-    log(f"[selenium] Done. {total_deleted} deleted detected total.")
+    log(f"[selenium] Done. {len(all_new_reviews)} scraped this run, "
+        f"{total_added} new added to rev.json, "
+        f"{total_deleted} moved to deleted.json")
     return all_new_reviews
 
 
