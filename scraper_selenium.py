@@ -12,7 +12,7 @@ from branches import BRANCHES, AGM_MAP
 from utils import (
     log, get_review_date, parse_relative_time, make_review_id,
     load_reviews, save_reviews, add_reviews, maps_url,
-    check_deletions_for_branch, move_to_deleted,
+    check_deletions_for_branch, move_to_deleted, reactivate_reviews,
 )
 
 BRAVE_PATHS = [
@@ -199,6 +199,12 @@ def run(ist_hour: int | None = None) -> list:
                 revs = scrape_branch_selenium(drv, bid, name, pid, review_date)
 
                 scraped_ids = {r["review_id"] for r in revs}
+
+                # Reactivate any reviews that came back to Google
+                n_react = reactivate_reviews(scraped_ids, existing)
+                if n_react:
+                    log(f"  [selenium] {name}: {n_react} reviews reactivated from deleted.json")
+
                 existing, _ = add_reviews(existing, revs)
                 all_new_reviews.extend(revs)
 

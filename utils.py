@@ -190,3 +190,37 @@ def maps_url(place_id: str) -> str:
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+# ─── Reactivation: deleted → rev.json (review reappears on Google) ────────────
+def reactivate_reviews(scraped_ids_this_run: set, rev_data: dict) -> int:
+    """
+    If a review in deleted.json is found AGAIN in the current scrape,
+    it means Google restored it (or it was a false deletion).
+    Move it back to rev.json and remove from deleted.json.
+
+    Call this BEFORE check_deletions_for_branch so the reactivated review
+    is in rev_data and won't be flagged as deleted again.
+
+    Returns count of reviews reactivated.
+    """
+    deleted = load_deleted()
+    if not deleted:
+        return 0
+
+    reactivated = 0
+    to_remove = []
+
+    for rid, rev in deleted.items():
+        if rid in scraped_ids_this_run and rid not in rev_data:
+            rev_data[rid] = {k: v for k, v in rev.items() if k != "detected_deleted_on"}
+            rev_data[rid]["reactivated_on"] = date.today().isoformat()
+            to_remove.append(rid)
+            reactivated += 1
+
+    if reactivated:
+        for rid in to_remove:
+            del deleted[rid]
+        save_deleted(deleted)
+
+    return reactivated
