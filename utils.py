@@ -143,7 +143,12 @@ def check_deletions_for_branch(
         return []
 
     now = datetime.now()        # local time — matches how scraped_at is stored
-    cutoff = now - timedelta(hours=31)
+    # Window = 13h = longest run gap (12am→10am = 10h) + 3h buffer.
+    # This ensures:
+    #   ✓ Reviews from the previous run are always within the window
+    #   ✓ Reviews from 2 days ago are never flagged as deleted
+    #   ✓ No false positives on the first run of a new day
+    cutoff = now - timedelta(hours=13)
 
     recently_stored = {}
     for rid, rev in rev_data.items():

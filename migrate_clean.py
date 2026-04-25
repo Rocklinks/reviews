@@ -1,26 +1,29 @@
 """
-migrate_clean.py — One-time migration script.
+migrate_clean.py — One-time migration + on-demand cleanup script.
 
-Run ONCE after updating to the new code (date removed from make_review_id hash).
+AUTO-RUN: main.py calls this automatically when it detects old-format
+duplicate entries in rev.json (entries whose review_id doesn't match
+the current stable hash scheme that excludes the date).
+
+MANUAL RUN:
+    python migrate_clean.py            # run migration
+    python migrate_clean.py --dry-run  # preview only, no changes
+    python migrate_clean.py --force    # run even if no duplicates detected
 
 What it does:
-  1. Deduplicates rev.json using the new stable hash (no date).
-     Keeps the EARLIEST scraped_at entry for each unique review.
-  2. Clears deleted.json — all existing entries are false positives
-     caused by the old bug (date was in hash, so Apr21 ID ≠ Apr22 ID
-     for the same review, causing Apr21 entries to be falsely "deleted").
-  3. Creates backups: rev.json.bak, deleted.json.bak
-
-Usage:
-    python migrate_clean.py
-    python migrate_clean.py --dry-run   # preview only, no changes
+  1. Scans rev.json for duplicates under the new hash (no date in hash).
+     Keeps the EARLIEST scraped_at entry per unique review.
+  2. Re-keys all entries with their correct new stable hash IDs.
+  3. Clears deleted.json — entries from before the hash fix are false
+     positives (Apr21 ID ≠ Apr22 ID for same review under old hash).
+  4. Creates timestamped backups before any changes.
 """
 
 import json, hashlib, shutil, argparse
 from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR     = Path(__file__).parent
 REV_FILE     = BASE_DIR / "rev.json"
 DELETED_FILE = BASE_DIR / "deleted.json"
 
@@ -32,78 +35,114 @@ def new_stable_id(branch_id: int, author: str, text: str, stars: int) -> str:
 
 
 def load(path):
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {}
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def save(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def needs_migration(rev: dict) -> bool:
+    """Return True if rev.json has entries that need migration."""
+    if not rev:
+        return False
+    seen = set()
+    for entry in rev.values():
+        try:
+            nid = new_stable_id(
+                entry["branch_id"], entry["author"],
+                entry["text"], entry["stars"]
+            )
+        except (KeyError, TypeError):
+            return True   # malformed entry
+        if entry.get("review_id") != nid:
+            return True   # old hash format
+        if nid in seen:
+            return True   # duplicate
+        seen.add(nid)
+    return False
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Preview only, no changes")
+    parser = argparse.ArgumentParser(description="Migrate rev.json to new hash scheme")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only")
+    parser.add_argument("--force",   action="store_true", help="Run even if clean")
     args = parser.parse_args()
-    dry = args.dry_run
 
     print("=" * 60)
-    print("MIGRATION: Clean rev.json duplicates + clear deleted.json")
+    print("migrate_clean.py — Sathya Agency review data migration")
     print("=" * 60)
 
-    # ── Step 1: Deduplicate rev.json ─────────────────────────────────
     rev = load(REV_FILE)
-    print(f"\nrev.json: {len(rev)} entries (before dedup)")
+    deleted = load(DELETED_FILE)
+    print(f"\nrev.json:     {len(rev)} entries")
+    print(f"deleted.json: {len(deleted)} entries")
 
-    # Group by new stable hash, keep earliest scraped_at
-    groups = {}  # new_id -> list of entries
-    for old_id, rev_entry in rev.items():
-        nid = new_stable_id(
-            rev_entry["branch_id"],
-            rev_entry["author"],
-            rev_entry["text"],
-            rev_entry["stars"],
-        )
-        groups.setdefault(nid, []).append(rev_entry)
+    # ── Check if migration is needed ────────────────────────────────────────
+    migration_needed = needs_migration(rev)
+    if not migration_needed and not args.force:
+        print("\n✅ rev.json is already clean. No migration needed.")
+        print("   (Use --force to run anyway)")
+        return
 
-    # Build clean rev with new IDs, keeping earliest scraped_at
+    if not migration_needed and args.force:
+        print("\n[--force] Running migration even though data looks clean.")
+
+    # ── Preview ─────────────────────────────────────────────────────────────
+    # Group by new stable hash → pick earliest scraped_at
+    groups = {}
+    for old_id, entry in rev.items():
+        try:
+            nid = new_stable_id(
+                entry["branch_id"], entry["author"],
+                entry["text"], entry["stars"]
+            )
+        except (KeyError, TypeError):
+            nid = old_id   # keep as-is if malformed
+        groups.setdefault(nid, []).append(entry)
+
     clean_rev = {}
     for nid, entries in groups.items():
         entries.sort(key=lambda e: e.get("scraped_at", ""))
-        winner = entries[0]
-        winner["review_id"] = nid          # update ID to new stable hash
-        # Keep the ORIGINAL date (first time it was scraped)
+        winner = dict(entries[0])
+        winner["review_id"] = nid
         clean_rev[nid] = winner
 
     removed = len(rev) - len(clean_rev)
-    print(f"rev.json: {len(clean_rev)} entries after dedup ({removed} duplicates removed)")
+    del_count = len(deleted)
 
-    # ── Step 2: Clear deleted.json ────────────────────────────────────
-    deleted = load(DELETED_FILE)
-    print(f"\ndeleted.json: {len(deleted)} entries — ALL are false positives from old bug")
-    print("  Reason: old hash included date → Apr21 ID ≠ Apr22 ID for same review")
-    print("  → All Apr21 entries were falsely flagged as 'deleted' on Apr22")
-    print("  → Clearing deleted.json entirely")
+    print(f"\nChanges to make:")
+    print(f"  rev.json:     {len(rev)} → {len(clean_rev)} entries ({removed} duplicates removed)")
+    print(f"  deleted.json: {del_count} → 0 entries (all were false positives from old hash bug)")
 
-    if dry:
-        print("\n[DRY RUN] No files changed.")
+    if args.dry_run:
+        print("\n[DRY RUN] No files changed. Remove --dry-run to apply.")
         return
 
-    # ── Backup ────────────────────────────────────────────────────────
+    # ── Backup ──────────────────────────────────────────────────────────────
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if REV_FILE.exists():
-        shutil.copy2(REV_FILE, str(REV_FILE) + ".bak")
-        print(f"\nBackup created: {REV_FILE}.bak")
-    if DELETED_FILE.exists():
-        shutil.copy2(DELETED_FILE, str(DELETED_FILE) + ".bak")
-        print(f"Backup created: {DELETED_FILE}.bak")
+        bak = Path(str(REV_FILE) + f".bak_{ts}")
+        shutil.copy2(REV_FILE, bak)
+        print(f"\nBackup: {bak.name}")
+    if DELETED_FILE.exists() and del_count > 0:
+        bak2 = Path(str(DELETED_FILE) + f".bak_{ts}")
+        shutil.copy2(DELETED_FILE, bak2)
+        print(f"Backup: {bak2.name}")
 
-    # ── Write ─────────────────────────────────────────────────────────
+    # ── Write ────────────────────────────────────────────────────────────────
     save(REV_FILE, clean_rev)
     save(DELETED_FILE, {})
 
-    print(f"\nrev.json: written ({len(clean_rev)} entries)")
-    print(f"deleted.json: cleared ({})")
-    print("\nMigration complete. Run the scraper normally from here.")
+    print(f"\nrev.json:     written ({len(clean_rev)} entries)")
+    print(f"deleted.json: cleared")
+    print("\n✅ Migration complete. The scraper will work correctly from here.")
 
 
 if __name__ == "__main__":

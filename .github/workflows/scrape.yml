@@ -1,86 +1,85 @@
 name: Sathya Agency Review Scraper
 
-# ─── Why these exact cron times? ──────────────────────────────────────────────
-# GitHub Actions cron can run 15–90 minutes late under high load.
-# To ensure each job actually fires at the correct IST time, we subtract
-# 90 minutes from the intended IST time when converting to UTC.
+# ─── Cron time calculation ─────────────────────────────────────────────────────
+# GitHub Actions cron can be 15–90 min late. We subtract 90 min from the
+# target IST time when converting to UTC to ensure the job runs on time.
 #
-# Formula:  UTC = IST_target − 5h30m − 90min_buffer
+# Formula:  UTC = IST_target − 5h30m − 90min = IST_target − 7h00m
 #
-# IST target  →  subtract 90min  →  UTC cron
-# ──────────────────────────────────────────
-#  06:00 IST  →  04:30 IST  →  23:00 UTC (prev day)
-#  12:00 IST  →  10:30 IST  →  05:00 UTC
-#  18:00 IST  →  16:30 IST  →  11:00 UTC
-#  00:00 IST  →  22:30 IST  →  17:00 UTC (prev day)
+# IST target   UTC cron    Notes
+# ──────────────────────────────────────────────────────────────
+# 10:00 AM  →  03:00 UTC
+# 04:00 PM  →  09:00 UTC
+# 08:00 PM  →  13:00 UTC
+# 12:00 AM  →  17:00 UTC  (midnight — reviews stamped as previous day)
 #
-# The IST hour passed to main.py is HARDCODED per job (not auto-detected),
-# so it is always correct regardless of when the runner actually starts.
+# IST hour is HARDCODED per job, so it is always correct regardless of
+# when the runner actually starts.
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
   schedule:
-    - cron: "0 23 * * *"    # fires ~06:00 IST  (with 90-min buffer)
-    - cron: "0 5  * * *"    # fires ~12:00 IST
-    - cron: "0 11 * * *"    # fires ~18:00 IST
-    - cron: "0 17 * * *"    # fires ~00:00 IST (midnight)
+    - cron: "0 3  * * *"    # fires ~10:00 AM IST
+    - cron: "0 9  * * *"    # fires ~04:00 PM IST
+    - cron: "0 13 * * *"    # fires ~08:00 PM IST
+    - cron: "0 17 * * *"    # fires ~12:00 AM IST (midnight)
 
   workflow_dispatch:
     inputs:
       ist_hour:
-        description: "IST hour to simulate (0, 6, 12, or 18)"
+        description: "IST hour to simulate (0=midnight, 10=10am, 16=4pm, 20=8pm)"
         required: true
-        default: "6"
+        default: "10"
         type: choice
-        options: ["0", "6", "12", "18"]
+        options: ["0", "10", "16", "20"]
       method:
         description: "Force a specific scraper method (leave blank for auto)"
         required: false
         default: ""
 
 jobs:
-  # ── 06:00 IST run ────────────────────────────────────────────────────────────
-  scrape-6am:
-    name: "Scrape — 6:00 AM IST"
+  # ── 10:00 AM IST run ─────────────────────────────────────────────────────────
+  scrape-10am:
+    name: "Scrape — 10:00 AM IST"
     if: |
-      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '6' ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 23')
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '10') ||
+      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 3'))
     uses: ./.github/workflows/_scrape_job.yml
     with:
-      ist_hour: "6"
+      ist_hour: "10"
       method: ${{ github.event.inputs.method || '' }}
     secrets: inherit
 
-  # ── 12:00 IST run ────────────────────────────────────────────────────────────
-  scrape-12pm:
-    name: "Scrape — 12:00 PM IST"
+  # ── 04:00 PM IST run ─────────────────────────────────────────────────────────
+  scrape-4pm:
+    name: "Scrape — 4:00 PM IST"
     if: |
-      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '12' ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 5')
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '16') ||
+      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 9'))
     uses: ./.github/workflows/_scrape_job.yml
     with:
-      ist_hour: "12"
+      ist_hour: "16"
       method: ${{ github.event.inputs.method || '' }}
     secrets: inherit
 
-  # ── 18:00 IST run ────────────────────────────────────────────────────────────
-  scrape-6pm:
-    name: "Scrape — 6:00 PM IST"
+  # ── 08:00 PM IST run ─────────────────────────────────────────────────────────
+  scrape-8pm:
+    name: "Scrape — 8:00 PM IST"
     if: |
-      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '18' ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 11')
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '20') ||
+      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 13'))
     uses: ./.github/workflows/_scrape_job.yml
     with:
-      ist_hour: "18"
+      ist_hour: "20"
       method: ${{ github.event.inputs.method || '' }}
     secrets: inherit
 
-  # ── 00:00 IST run (midnight) ─────────────────────────────────────────────────
+  # ── 12:00 AM IST run (midnight) ──────────────────────────────────────────────
   scrape-midnight:
     name: "Scrape — 12:00 AM IST (midnight)"
     if: |
-      github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '0' ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 17')
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '0') ||
+      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 17'))
     uses: ./.github/workflows/_scrape_job.yml
     with:
       ist_hour: "0"
