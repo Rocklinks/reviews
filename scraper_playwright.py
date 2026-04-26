@@ -157,6 +157,7 @@ def run(ist_hour: int | None = None) -> list:
     # Load existing reviews ONCE before the scrape loop
     existing = load_reviews()
     total_deleted = 0
+    total_added = 0
 
     with sync_playwright() as pw:
         launch_kwargs = {
