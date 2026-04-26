@@ -27,7 +27,7 @@ def get_review_date(ist_hour: int) -> str:
 
 
 def parse_relative_time(text: str) -> bool:
-    """Return True if relative-time string is within last ~23 hours."""
+    """Return True if relative-time string is within last ~24 hours."""
     if not text:
         return False
     text = text.strip().lower()
@@ -38,7 +38,7 @@ def parse_relative_time(text: str) -> bool:
         n, unit = int(m.group(1)), m.group(2)
         if unit == "minute" and n <= 1439:
             return True
-        if unit == "hour" and n <= 23:
+        if unit == "hour" and n <= 24:
             return True
     return False
 
@@ -127,7 +127,7 @@ def check_deletions_for_branch(
     Logic:
     - Look at stored reviews for this branch where scraped_at is within
       the last 31 hours.
-      Why 31h?  Reviews appear on Google for up to 23h. scraped_at is stored
+      Why 31h?  Reviews appear on Google for up to 24h. scraped_at is stored
       in LOCAL time (IST) but comparison uses local time too (datetime.now()),
       so they are consistent. 31h gives enough buffer for the 6h run interval
       plus any GitHub Actions delays.
