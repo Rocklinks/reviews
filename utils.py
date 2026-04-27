@@ -133,6 +133,7 @@ def check_deletions_for_branch(
     branch_id: int,
     scraped_ids_this_run: set,
     rev_data: dict,
+    ist_hour: int = -1,
 ) -> list:
     """
     Detect deleted reviews for a single branch.
@@ -163,13 +164,25 @@ def check_deletions_for_branch(
         
         rev_date = rev.get("date", "")
         
-        if rev_date == yesterday:
-            # First run of day: check yesterday's reviews
-            if scraped_at.date() == (now - timedelta(days=1)).date():
+#        if rev_date == yesterday:
+#            # First run of day: check yesterday's reviews
+#            if scraped_at.date() == (now - timedelta(days=1)).date():
+#                recently_stored[rid] = rev
+#        elif rev_date == today:
+#            # Same-day runs: check prior runs today
+#            if scraped_at.date() == now.date() and scraped_at < now:
+#                recently_stored[rid] = rev
+        if ist_hour == 0:
+            # midnight run: only today's reviews
+            if rev_date == today:
                 recently_stored[rid] = rev
-        elif rev_date == today:
-            # Same-day runs: check prior runs today
-            if scraped_at.date() == now.date() and scraped_at < now:
+        elif ist_hour == 10:
+            # morning run: only yesterday's reviews
+            if rev_date == yesterday:
+                recently_stored[rid] = rev
+        else:
+            # afternoon/evening: both today and yesterday
+            if rev_date in (today, yesterday):
                 recently_stored[rid] = rev
 
     deleted = []
@@ -241,8 +254,8 @@ def find_deleted_reviews(all_scraped_ids: list, rev_data: dict) -> list:
     return deleted
 
 
-def save_newly_deleted(deleted_reviews: list) -> int:
-    """Legacy: save newly deleted reviews to deleted.json."""
+def save_newly_deleted(deleted_reviews: list, rev_data: dict) -> int:
+    """Legacy: move newly deleted reviews from rev.json → deleted.json."""
     if not deleted_reviews:
         return 0
     existing_deleted = load_deleted()
@@ -252,6 +265,7 @@ def save_newly_deleted(deleted_reviews: list) -> int:
         if rid not in existing_deleted:
             existing_deleted[rid] = rev
             moved += 1
+        rev_data.pop(rid, None)   # ← remove from rev.json
     if moved:
         save_deleted(existing_deleted)
     return moved

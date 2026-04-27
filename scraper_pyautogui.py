@@ -261,8 +261,9 @@ def run(ist_hour: int | None = None) -> list[dict]:
 
     if all_scraped_ids:
         log("[pyautogui] Running deletion check…")
-        deleted = find_deleted_reviews(list(all_scraped_ids), existing,  ist_hour)
-        n = save_newly_deleted(deleted)
+        deleted = find_deleted_reviews(list(all_scraped_ids), existing, ist_hour)
+        n = save_newly_deleted(deleted, existing)   # ← pass existing
+        save_reviews(existing)                       # ← persist the removals
         log(f"[pyautogui] Deletion check: {n} newly deleted reviews saved")
 
     return all_new_reviews
