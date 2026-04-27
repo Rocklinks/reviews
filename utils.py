@@ -207,11 +207,8 @@ def move_to_deleted(deleted_reviews: list, rev_data: dict) -> int:
 
 # ─── Deletion meta helpers (for pyautogui backward compat) ────────
 def should_check_deletions() -> bool:
-    """Check if it's time to run deletion detection."""
-    meta_file = BASE_DIR / ".deletion_meta.json"
-    data = _load_json(meta_file)
-    today = date.today().isoformat()
-    return data.get("last_check") != today
+    """Deletion Check.""")
+    return True
 
 
 def record_deletion_check() -> None:
@@ -226,8 +223,20 @@ def find_deleted_reviews(all_scraped_ids: list, rev_data: dict) -> list:
     """Legacy: find reviews that were previously stored but not scraped."""
     deleted = []
     today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    # midnight run (ist_hour=0): only check today's reviews, skip yesterday
+    # morning run (ist_hour=10): check yesterday's reviews (first run of day)
+    # afternoon/evening runs: check both yesterday and today
+    if ist_hour == 0:
+        check_dates = {today}
+    elif ist_hour == 10:
+        check_dates = {yesterday}
+    else:
+        check_dates = {today, yesterday}
+
     for rid, rev in rev_data.items():
-        if rev.get("date") == today and rid not in all_scraped_ids:
+        if rev.get("date") in check_dates and rid not in all_scraped_ids:
             deleted.append({**rev, "detected_deleted_on": today})
     return deleted
 

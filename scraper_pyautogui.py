@@ -20,7 +20,6 @@ from branches import BRANCHES, AGM_MAP
 from utils import (
     log, get_review_date, parse_relative_time, make_review_id,
     load_reviews, save_reviews, add_reviews, maps_url,
-    should_check_deletions, record_deletion_check,
     find_deleted_reviews, save_newly_deleted
 )
 
@@ -260,11 +259,10 @@ def run(ist_hour: int | None = None) -> list[dict]:
     save_reviews(existing)
     log(f"[pyautogui] Done. {added} new reviews added.")
 
-    if do_deletion_check and all_scraped_ids:
+    if all_scraped_ids:
         log("[pyautogui] Running deletion check…")
-        deleted = find_deleted_reviews(list(all_scraped_ids), existing)
+        deleted = find_deleted_reviews(list(all_scraped_ids), existing,  ist_hour)
         n = save_newly_deleted(deleted)
-        record_deletion_check()
         log(f"[pyautogui] Deletion check: {n} newly deleted reviews saved")
 
     return all_new_reviews
