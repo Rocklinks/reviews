@@ -95,17 +95,17 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
         unique_cards = []
         for card in review_cards:
             try:
-                handle = card.evaluate("el => el.dataset.reviewId || el.dataset.jslog || Math.random()")
+                handle = card.evaluate("el => el.dataset.reviewId || el.dataset.jslog || el.outerHTML.substring(0, 200)")
                 if handle not in seen:
                     seen.add(handle)
                     unique_cards.append(card)
             except Exception:
-                unique_cards.append(card)
-
-        for card in review_cards:
+                pass
+        # Use unique_cards
+        for card in unique_cards:
             try:
                 rel_time_el = card.locator(
-                    'span[class*="dehysf"], .rsqaWe, span[aria-label*="ago"], span[aria-label*="now"]'
+                    'span[class*="dehysf"], .rsqaWe, span[aria-label*="ago"], span[aria-label*="now"], span.XfOne, div[class*="DUxS3d"]'
                 ).first
                 rel_time = rel_time_el.inner_text(timeout=2000).strip()
 
