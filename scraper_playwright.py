@@ -104,12 +104,20 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
         # Use unique_cards
         for card in unique_cards:
             try:
-                rel_time_el = card.locator(
-                    'span[class*="dehysf"], .rsqaWe, span[aria-label*="ago"], span[aria-label*="now"], span.XfOne, div[class*="DUxS3d"]'
-                ).first
-                rel_time = rel_time_el.inner_text(timeout=2000).strip()
+                rel_time = ""
+                for sel in [
+                    'span.XfOne', 'div[class*="DUxS3d"]', '.rsqaWe',
+                    'span[aria-label*="ago"]', 'span[aria-label*="now"]'
+                ]:
+                    try:
+                        el = card.locator(sel).first
+                        if el.count() > 0:
+                            rel_time = el.inner_text(timeout=1500).strip()
+                            break
+                    except Exception:
+                        continue
 
-                if not parse_relative_time(rel_time):
+                if not rel_time or not parse_relative_time(rel_time):
                     continue
 
                 try:
