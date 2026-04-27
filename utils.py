@@ -31,14 +31,27 @@ def parse_relative_time(text: str) -> bool:
     if not text:
         return False
     text = text.strip().lower()
-    if text in ("just now", "a moment ago"):
+    if text in ("just now", "a moment ago", "now"):
         return True
-    m = re.match(r"(\d+)\s*(minute|hour)s?\s*ago", text)
+    # Handle "X minute(s) ago", "X hour(s) ago", "X day(s) ago" patterns
+    m = re.match(r"(\d+)\s*(minute|hour|day)s?\s*ago", text)
     if m:
         n, unit = int(m.group(1)), m.group(2)
         if unit == "minute" and n <= 1439:
             return True
         if unit == "hour" and n <= 24:
+            return True
+        if unit == "day" and n <= 1:  # within 1 day = 24 hours
+            return True
+    # Also match patterns like "5m ago" or "2h ago" without space
+    m2 = re.match(r"(\d+)([mhd])\s*ago", text)
+    if m2:
+        n, unit = int(m2.group(1)), m2.group(2)
+        if unit == "m" and n <= 1439:
+            return True
+        if unit == "h" and n <= 24:
+            return True
+        if unit == "d" and n <= 1:
             return True
     return False
 
@@ -125,30 +138,19 @@ def check_deletions_for_branch(
     Detect deleted reviews for a single branch.
 
     Logic:
-    - Look at stored reviews for this branch where scraped_at is within
-      the last 31 hours.
-      Why 31h?  Reviews appear on Google for up to 24h. scraped_at is stored
-      in LOCAL time (IST) but comparison uses local time too (datetime.now()),
-      so they are consistent. 31h gives enough buffer for the 6h run interval
-      plus any GitHub Actions delays.
-    - If a recently-stored review is NOT in today's scraped_ids → deleted.
-    - If scraped 0 results (scrape failed) → skip entirely, no false positives.
-
-    BUG FIX: Previous version used datetime.utcnow() to build the cutoff but
-    scraped_at was stored with datetime.now() (local/IST time). This made the
-    effective window only ~19.5h instead of 25h. Now both use datetime.now()
-    so the comparison is consistent, and the window is 31h for extra safety.
+    - First run of the day (morning at 10am): check against ALL stored
+      reviews for this branch from PREVIOUS DAY (scraped_at date before today).
+    - Subsequent runs (afternoon/evening): check against reviews scraped
+      in prior runs TODAY (same date as review_date).
+    - If a previously-visible review is NOT in today's scraped_ids → deleted.
+    - Avoids false positives by using the appropriate time window.
     """
     if not scraped_ids_this_run:
         return []
 
-    now = datetime.now()        # local time — matches how scraped_at is stored
-    # Window = 13h = longest run gap (12am→10am = 10h) + 3h buffer.
-    # This ensures:
-    #   ✓ Reviews from the previous run are always within the window
-    #   ✓ Reviews from 2 days ago are never flagged as deleted
-    #   ✓ No false positives on the first run of a new day
-    cutoff = now - timedelta(hours=13)
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    now = datetime.now()
 
     recently_stored = {}
     for rid, rev in rev_data.items():
@@ -158,15 +160,24 @@ def check_deletions_for_branch(
             scraped_at = datetime.fromisoformat(rev["scraped_at"])
         except (KeyError, ValueError):
             continue
-        if scraped_at >= cutoff:
-            recently_stored[rid] = rev
+        
+        rev_date = rev.get("date", "")
+        
+        if rev_date == yesterday:
+            # First run of day: check yesterday's reviews
+            if scraped_at.date() == (now - timedelta(days=1)).date():
+                recently_stored[rid] = rev
+        elif rev_date == today:
+            # Same-day runs: check prior runs today
+            if scraped_at.date() == now.date() and scraped_at < now:
+                recently_stored[rid] = rev
 
     deleted = []
     for rid, rev in recently_stored.items():
         if rid not in scraped_ids_this_run:
             deleted.append({
                 **rev,
-                "detected_deleted_on": date.today().isoformat(),
+                "detected_deleted_on": today,
             })
     return deleted
 
@@ -189,6 +200,49 @@ def move_to_deleted(deleted_reviews: list, rev_data: dict) -> int:
             moved += 1
         # Always remove from rev_data even if already in deleted.json
         rev_data.pop(rid, None)
+    if moved:
+        save_deleted(existing_deleted)
+    return moved
+
+
+# ─── Deletion meta helpers (for pyautogui backward compat) ────────
+def should_check_deletions() -> bool:
+    """Check if it's time to run deletion detection."""
+    meta_file = BASE_DIR / ".deletion_meta.json"
+    data = _load_json(meta_file)
+    today = date.today().isoformat()
+    return data.get("last_check") != today
+
+
+def record_deletion_check() -> None:
+    """Mark that deletion check was done today."""
+    meta_file = BASE_DIR / ".deletion_meta.json"
+    data = {"last_check": date.today().isoformat()}
+    _save_json(meta_file, data)
+
+
+# ─── Legacy deletion helpers (used by pyautogui scraper) ────────────────
+def find_deleted_reviews(all_scraped_ids: list, rev_data: dict) -> list:
+    """Legacy: find reviews that were previously stored but not scraped."""
+    deleted = []
+    today = date.today().isoformat()
+    for rid, rev in rev_data.items():
+        if rev.get("date") == today and rid not in all_scraped_ids:
+            deleted.append({**rev, "detected_deleted_on": today})
+    return deleted
+
+
+def save_newly_deleted(deleted_reviews: list) -> int:
+    """Legacy: save newly deleted reviews to deleted.json."""
+    if not deleted_reviews:
+        return 0
+    existing_deleted = load_deleted()
+    moved = 0
+    for rev in deleted_reviews:
+        rid = rev["review_id"]
+        if rid not in existing_deleted:
+            existing_deleted[rid] = rev
+            moved += 1
     if moved:
         save_deleted(existing_deleted)
     return moved

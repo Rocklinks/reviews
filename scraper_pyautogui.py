@@ -13,8 +13,11 @@ import subprocess
 import datetime
 import re
 import json
-import pyperclip
 from pathlib import Path
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
 
 from branches import BRANCHES, AGM_MAP
 from utils import (

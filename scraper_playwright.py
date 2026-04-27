@@ -74,10 +74,33 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
             page.keyboard.press("End")
             page.wait_for_timeout(1500)
 
-        # Extract review cards
-        review_cards = page.locator('div[data-review-id], div[jscontroller][class*="review"]').all()
-        if not review_cards:
-            review_cards = page.locator('div[class*="MyEned"], div[jslog*="review"]').all()
+        # Extract review cards - use multiple selector strategies
+        selectors = [
+            'div[data-review-id]',
+            'div[jscontroller][class*="review"]',
+            'div[class*="MyEned"]',
+            'div[jslog*="review"]',
+            'div[class*="review-text"]',
+            'div[aria-label*="Review"]',
+        ]
+        review_cards = []
+        for sel in selectors:
+            try:
+                cards = page.locator(sel).all()
+                review_cards.extend(cards)
+            except Exception:
+                pass
+        # Dedupe by element handle
+        seen = set()
+        unique_cards = []
+        for card in review_cards:
+            try:
+                handle = card.evaluate("el => el.dataset.reviewId || el.dataset.jslog || Math.random()")
+                if handle not in seen:
+                    seen.add(handle)
+                    unique_cards.append(card)
+            except Exception:
+                unique_cards.append(card)
 
         for card in review_cards:
             try:

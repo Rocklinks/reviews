@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sathya Agency Reviews - 36 Branches</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+               background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; 
+                 margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #333; }
+        h1 { color: #00d4ff; font-size: 1.8rem; }
+        .status-bar { display: flex; gap: 12px; align-items: center; }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; 
+               font-weight: 600; transition: all 0.2s; }
+        .btn-primary { background: #00d4ff; color: #1a1a2e; }
+        .btn-primary:hover { background: #00b8e6; }
+        .btn-success { background: #00ff88; color: #1a1a2e; }
+        .btn-success:hover { background: #00e678; }
+        .btn-warning { background: #ffaa00; color: #1a1a2e; }
+        .btn-danger { background: #ff4757; color: #fff; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #16213e; padding: 16px; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
+        .stat-label { color: #888; font-size: 0.9rem; }
+        .controls { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+        .method-badge { padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+        .method-playwright { background: #00d4ff; color: #1a1a2e; }
+        .method-selenium { background: #00ff88; color: #1a1a2e; }
+        .method-pyautogui { background: #ffaa00; color: #1a1a2e; }
+        .log-box { background: #0f0f23; padding: 16px; border-radius: 8px; height: 200px; overflow-y: auto; 
+                  font-family: 'Monaco', 'Consolas', monospace; font-size: 0.85rem; color: #0f0; 
+                  margin-bottom: 24px; }
+        .log-entry { margin-bottom: 4px; }
+        .branch-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+        .branch-card { background: #16213e; padding: 12px; border-radius: 8px; 
+                      border-left: 3px solid #00d4ff; }
+        .branch-name { font-weight: 600; color: #00d4ff; margin-bottom: 4px; }
+        .branch-id { color: #666; font-size: 0.8rem; }
+        .branch-reviews { display: flex; justify-content: space-between; align-items: center; 
+                         margin-top: 8px; }
+        .review-count { background: #00ff88; color: #1a1a2e; padding: 2px 8px; 
+                      border-radius: 10px; font-weight: 600; font-size: 0.9rem; }
+        @media (max-width: 1200px) { .branch-grid { grid-template-columns: repeat(4, 1fr); } }
+        @media (max-width: 800px) { .branch-grid { grid-template-columns: repeat(2, 1fr); } 
+                                    .stats { grid-template-columns: repeat(2, 1fr); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sathya Agency Reviews - 36 Branches</h1>
+            <div class="status-bar">
+                <span class="method-badge method-playwright">Playwright</span>
+                <span id="lastRun">Last run: Never</span>
+            </div>
+        </header>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="totalReviews">0</div>
+                <div class="stat-label">Total Reviews</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalBranches">36</div>
+                <div class="stat-label">Active Branches</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalDeleted">0</div>
+                <div class="stat-label">Deleted Reviews</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="todayScraped">0</div>
+                <div class="stat-label">Today's Scraped</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-primary" onclick="runScraper('playwright')">
+                Scrape All (Playwright)
+            </button>
+            <button class="btn btn-success" onclick="runScraper('selenium')">
+                Scrape All (Selenium)
+            </button>
+            <button class="btn btn-warning" onclick="runMigration()">
+                Migrate &amp; Clean
+            </button>
+            <button class="btn btn-danger" onclick="clearDeleted()">
+                Clear Deleted
+            </button>
+        </div>
+
+        <div class="log-box" id="logBox">
+            <div class="log-entry">[Ready] Click a button to start scraping</div>
+        </div>
+
+        <h2 style="margin-bottom: 16px;">Branch Reviews</h2>
+        <div class="branch-grid" id="branchGrid"></div>
+    </div>
+
+    <script>
+        const BRANCHES = [
+            {id: 5, name: "Tirunelveli-1", place: "ChIJ2RU2NvQRBDsRq-Fw7IVwx7k"},
+            {id: 6, name: "Tuticorin-1", place: "ChIJ5zJNoJfvAzsR-bJE_3bbNYw"},
+            {id: 7, name: "Thenkasi", place: "ChIJuaqqquEpBDsRVITw0MMYklc"},
+            {id: 8, name: "Tuticorin-2", place: "ChIJH6gY4-PvAzsRJ50skTlx3cs"},
+            {id: 9, name: "Thenkasi-2", place: "ChIJiwqLye6DBjsRo9v1mWXaycI"},
+            {id: 10, name: "Ramnad", place: "ChIJNVVVVaGiATsRnunSgOTvbE8"},
+            {id: 11, name: "Nagercoil", place: "ChIJe1LZBiTxBDsRJFLjlbgZoIs"},
+            {id: 12, name: "Rajapalayam", place: "ChIJW2ot-NDpBjsRMTfMF2IV-xE"},
+            {id: 13, name: "Thiruchendur-1", place: "ChIJeXA4vJKRAzsRBovAtv6lMuQ"},
+            {id: 14, name: "Virudhunagar-2", place: "ChIJPezaX7wtATsR9sHhFOG6A1c"},
+            {id: 15, name: "Aruppukottai", place: "ChIJy6qqqgYwATsRbcp-hXnoruM"},
+            {id: 16, name: "Surandai-1", place: "ChIJPb1_eEOdBjsRjL9IVCVJhi8"},
+            {id: 17, name: "Kovilpatti", place: "ChIJHY0o-26yBjsRt7wbXB1pDUE"},
+            {id: 18, name: "Puliyankudi-1", place: "ChIJjZqoc46RBjsRQTGHnNC8xxA"},
+            {id: 19, name: "Udankudi", place: "ChIJPQAAACyEAzsRgjznQ1GLom0"},
+            {id: 20, name: "Aruppukottai-2", place: "ChIJY04wY58xATsRuoJSichVQQE"},
+            {id: 21, name: "Sivakasi", place: "ChIJI2JvEePOBjsREh8b-x4WF4U"},
+            {id: 22, name: "Kulasekharam-1", place: "ChIJw0Ep-kNXBDsRe5ad32jAeAk"},
+            {id: 23, name: "Sattur-2", place: "ChIJNVVVVcHKBjsR7xMX97RFn8Q"},
+            {id: 24, name: "Ambasamudram-1", place: "ChIJ9SGeIi85BDsRZk4QdyW9BSY"},
+            {id: 25, name: "Anjugramam-1", place: "ChIJ4yeJebLtBDsRDceoxujdGyc"},
+            {id: 26, name: "Eral-2", place: "ChIJbwAA0KGMAzsRkQilW5PceeA"},
+            {id: 27, name: "Kayathar-1", place: "ChIJx5ebtUgRBDsRMquPZNUJVpw"},
+            {id: 28, name: "Virudhunagar", place: "ChIJN3jzNJgsATsRCU3nrB5ntKE"},
+            {id: 29, name: "Thuckalay-1", place: "ChIJc9QgEub4BDsRoyDR4Wd6tYA"},
+            {id: 30, name: "Sayalkudi-1", place: "ChIJRTqudn9lATsR2fYyMmxlOrw"},
+            {id: 31, name: "Valliyur-1", place: "ChIJcVNk6TtnBDsRBoP4zpExt5k"},
+            {id: 32, name: "Marthandam", place: "ChIJcWptCRdVBDsRlJh2q0-rnfY"},
+            {id: 33, name: "Sengottai-1", place: "ChIJw3zzKiaBBjsR9KDyGpn1nXU"},
+            {id: 34, name: "Karungal-1", place: "ChIJfTP5ASr_BDsRgsBaeQltkw4"},
+            {id: 35, name: "Colachel-1", place: "ChIJgRkBLw39BDsR58D0lwNo5Ts"},
+            {id: 36, name: "Sankarankovil-1", place: "ChIJE1mKnhSXBjsRKMQ-9JKQf_c"},
+            {id: 37, name: "Thisayanvilai-1", place: "ChIJVWkvdfh_BDsRdvtimKCLS5Y"},
+            {id: 38, name: "Paramakudi", place: "ChIJ-dgjBzQHATsRf27FWAJgmsA"},
+            {id: 39, name: "Monday Market", place: "ChIJTceRGAD5BDsR65i3YNTcYHk"},
+            {id: 40, name: "Villathikullam", place: "ChIJi_wAkwVbATsRtFl3_V5rGrY"}
+        ];
+
+        let reviewData = {reviews: {}, deleted: {}};
+        let currentMethod = 'playwright';
+
+        function log(msg) {
+            const box = document.getElementById('logBox');
+            const time = new Date().toLocaleTimeString();
+            box.innerHTML += `<div class="log-entry">[${time}] ${msg}</div>`;
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function updateStats() {
+            document.getElementById('totalReviews').textContent = Object.keys(reviewData.reviews).length;
+            document.getElementById('totalDeleted').textContent = Object.keys(reviewData.deleted).length;
+            
+            const today = new Date().toISOString().split('T')[0];
+            const todayCount = Object.values(reviewData.reviews).filter(r => r.date === today).length;
+            document.getElementById('todayScraped').textContent = todayCount;
+        }
+
+        function renderBranches() {
+            const grid = document.getElementById('branchGrid');
+            const counts = {};
+            Object.values(reviewData.reviews).forEach(r => {
+                counts[r.branch_name] = (counts[r.branch_name] || 0) + 1;
+            });
+            
+            grid.innerHTML = BRANCHES.map(b => `
+                <div class="branch-card">
+                    <div class="branch-name">${b.name}</div>
+                    <div class="branch-id">#${b.id}</div>
+                    <div class="branch-reviews">
+                        <span class="review-count">${counts[b.name] || 0}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+                reviewData.reviews = data.reviews || {};
+                reviewData.deleted = data.deleted || {};
+                updateStats();
+                renderBranches();
+                
+                const lastRun = data.lastRun ? new Date(data.lastRun).toLocaleString() : 'Never';
+                document.getElementById('lastRun').textContent = 'Last run: ' + lastRun;
+            } catch(e) {
+                log('Loaded local data (API not running)');
+                renderBranches();
+            }
+        }
+
+        async function runScraper(method) {
+            currentMethod = method;
+            log(`Starting ${method} scraper for all 36 branches...`);
+            
+            const btn = event.target;
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch('/api/scrape', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({method, hour: new Date().getHours()})
+                });
+                const result = await res.json();
+                
+                log(`Scraped ${result.scraped} reviews`);
+                log(`Added ${result.added} new reviews`);
+                log(`Deleted ${result.deleted} reviews`);
+                
+                if (result.success) {
+                    log('Scraping completed successfully!');
+                }
+            } catch(e) {
+                log('Error: ' + e.message);
+                log('Running standalone test - API not available');
+            }
+            
+            btn.disabled = false;
+            await loadData();
+        }
+
+        async function runMigration() {
+            log('Running migration and cleanup...');
+            try {
+                const res = await fetch('/api/migrate', {method: 'POST'});
+                const result = await res.json();
+                log(`Cleaned ${result.removed} duplicates`);
+            } catch(e) {
+                log('Running python migrate_clean.py...');
+            }
+            await loadData();
+        }
+
+        async function clearDeleted() {
+            if (!confirm('Clear all deleted reviews?')) return;
+            log('Clearing deleted.json...');
+            try {
+                await fetch('/api/delete-deleted', {method: 'DELETE'});
+            } catch(e) {}
+            await loadData();
+        }
+
+        loadData();
+    </script>
+</body>
+</html>
