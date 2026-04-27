@@ -177,13 +177,12 @@ def run(ist_hour: int | None = None) -> list:
         return []
 
     if ist_hour is None:
-        ist_hour = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).hour
+        ist_hour = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).hour
 
     review_date = get_review_date(ist_hour)
     log(f"[selenium] Starting. IST hour={ist_hour}, review_date={review_date}")
 
     all_new_reviews = []
-    total_added = 0
     total_added = 0
     total_deleted = 0
     existing = load_reviews()
@@ -207,7 +206,8 @@ def run(ist_hour: int | None = None) -> list:
                 if n_react:
                     log(f"  [selenium] {name}: {n_react} reviews reactivated from deleted.json")
 
-                existing, _ = add_reviews(existing, revs)
+                existing, added = add_reviews(existing, revs)
+                total_added += added
                 all_new_reviews.extend(revs)
 
                 deleted = check_deletions_for_branch(bid, scraped_ids, existing)

@@ -13,11 +13,8 @@ import subprocess
 import datetime
 import re
 import json
+import pyperclip
 from pathlib import Path
-try:
-    import pyperclip
-except ImportError:
-    pyperclip = None
 
 from branches import BRANCHES, AGM_MAP
 from utils import (
@@ -220,7 +217,7 @@ def run(ist_hour: int | None = None) -> list[dict]:
     pag.PAUSE = 0.3
 
     if ist_hour is None:
-        ist_hour = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).hour
+        ist_hour = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).hour
 
     review_date = get_review_date(ist_hour)
     log(f"[pyautogui] Starting. IST hour={ist_hour}, review_date={review_date}")

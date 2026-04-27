@@ -177,7 +177,7 @@ def run(ist_hour: int | None = None) -> list:
         return []
 
     if ist_hour is None:
-        ist_hour = (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).hour
+        ist_hour = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).hour
 
     review_date = get_review_date(ist_hour)
     log(f"[playwright] Starting. IST hour={ist_hour}, review_date={review_date}")

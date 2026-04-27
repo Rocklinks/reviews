@@ -27,7 +27,7 @@ VALID_IST_HOURS = {0, 10, 16, 20}
 
 
 def get_ist_hour() -> int:
-    return (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).hour
+    return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).hour
 
 
 def needs_migration() -> bool:
