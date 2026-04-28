@@ -656,5 +656,61 @@
     "date": "2026-04-28",
     "scraped_at": "2026-04-28T16:57:26.487068",
     "method": "playwright"
+  },
+  "9a6b650454e10dfb": {
+    "review_id": "9a6b650454e10dfb",
+    "branch_id": 6,
+    "branch_name": "Tuticorin-1",
+    "place_id": "ChIJ5zJNoJfvAzsR-bJE_3bbNYw",
+    "agm": "Siva",
+    "author": "jeyakumar\n1 review",
+    "stars": 5,
+    "relative_time": "3 hours ago",
+    "text": "I buy mobile best price and best explanation and good staffs and gift also provided thanks for sathya",
+    "date": "2026-04-27",
+    "scraped_at": "2026-04-28T20:04:29.198399",
+    "method": "playwright"
+  },
+  "1ced4bea40714e35": {
+    "review_id": "1ced4bea40714e35",
+    "branch_id": 7,
+    "branch_name": "Thenkasi",
+    "place_id": "ChIJuaqqquEpBDsRVITw0MMYklc",
+    "agm": "Muthuselvam",
+    "author": "prabha karan\n3 reviews",
+    "stars": 5,
+    "relative_time": "5 hours ago",
+    "text": "“Your service is satisfactory and unique.” Thank you",
+    "date": "2026-04-27",
+    "scraped_at": "2026-04-28T20:05:30.791394",
+    "method": "playwright"
+  },
+  "266b58baae41a11d": {
+    "review_id": "266b58baae41a11d",
+    "branch_id": 12,
+    "branch_name": "Rajapalayam",
+    "place_id": "ChIJW2ot-NDpBjsRMTfMF2IV-xE",
+    "agm": "Muthuselvam",
+    "author": "Vel Sakthi",
+    "stars": 5,
+    "relative_time": "5 hours ago",
+    "text": "Good",
+    "date": "2026-04-27",
+    "scraped_at": "2026-04-28T20:10:24.248862",
+    "method": "playwright"
+  },
+  "d191a0e95f214aad": {
+    "review_id": "d191a0e95f214aad",
+    "branch_id": 24,
+    "branch_name": "Ambasamudram-1",
+    "place_id": "ChIJ9SGeIi85BDsRZk4QdyW9BSY",
+    "agm": "John",
+    "author": "Moorthi Bala\n1 review · 9 photos",
+    "stars": 5,
+    "relative_time": "5 hours ago",
+    "text": "Good service staff friendly",
+    "date": "2026-04-27",
+    "scraped_at": "2026-04-28T20:21:53.539621",
+    "method": "playwright"
   }
 }
