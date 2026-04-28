@@ -67,13 +67,20 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 if newest_opt.is_visible(timeout=3000):
                     newest_opt.click()
                     page.wait_for_timeout(2000)
+                    log(f"  [playwright] {branch_name}: sorted by newest")
         except Exception:
             pass
 
-        # Scroll to load reviews
-        for _ in range(5):
-            page.keyboard.press("End")
-            page.wait_for_timeout(1500)
+        # Scroll the reviews panel (not just keyboard End — that scrolls wrong element)
+        try:
+            panel = page.locator('div[aria-label*="Reviews"]').first
+            for _ in range(8):
+                panel.evaluate("el => el.scrollTop += 2000")
+                page.wait_for_timeout(1000)
+        except Exception:
+            for _ in range(10):
+                page.keyboard.press("End")
+                page.wait_for_timeout(1000)
 
         # Extract review cards — use multiple selector strategies
         selectors = [
