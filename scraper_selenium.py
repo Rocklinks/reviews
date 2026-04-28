@@ -210,7 +210,7 @@ def run(ist_hour: int | None = None) -> list:
                 total_added += added
                 all_new_reviews.extend(revs)
 
-                deleted = check_deletions_for_branch(bid, scraped_ids, existing)
+                deleted = check_deletions_for_branch(bid, scraped_ids, existing, ist_hour)
                 if deleted:
                     n = move_to_deleted(deleted, existing)
                     total_deleted += n

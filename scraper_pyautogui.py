@@ -20,7 +20,7 @@ from branches import BRANCHES, AGM_MAP
 from utils import (
     log, get_review_date, parse_relative_time, make_review_id,
     load_reviews, save_reviews, add_reviews, maps_url,
-    find_deleted_reviews, save_newly_deleted
+    find_deleted_reviews, save_newly_deleted, should_check_deletions,
 )
 
 BRAVE_BINS = [
