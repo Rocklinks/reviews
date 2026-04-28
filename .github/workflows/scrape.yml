@@ -1,28 +1,28 @@
 name: Sathya Agency Review Scraper
 
 # ─── Cron time calculation ─────────────────────────────────────────────────────
-# GitHub Actions cron can be 15–90 min late. We subtract 90 min from the
-# target IST time when converting to UTC to ensure the job runs on time.
+# GitHub Actions runners typically start within 0–30 min after the cron fires.
+# We schedule 30 min BEFORE the target IST time to ensure the job runs on time.
 #
-# Formula:  UTC = IST_target − 5h30m − 90min = IST_target − 7h00m
+# Formula:  UTC = IST_target − 5h30m − 0h30m  =  IST_target − 6h00m
 #
-# IST target   UTC cron    Notes
-# ──────────────────────────────────────────────────────────────
-# 10:00 AM  →  03:00 UTC
-# 04:00 PM  →  09:00 UTC
-# 08:00 PM  →  13:00 UTC
-# 12:00 AM  →  17:00 UTC  (midnight — reviews stamped as previous day)
+# IST target   UTC cron    Runner start (UTC+0 → IST)
+# ────────────────────────────────────────────────────────────
+# 10:00 AM  →  04:00 UTC   starts 04:00–04:30 UTC = 09:30–10:00 IST ✓
+# 04:00 PM  →  10:00 UTC   starts 10:00–10:30 UTC = 15:30–16:00 IST ✓
+# 08:00 PM  →  14:00 UTC   starts 14:00–14:30 UTC = 19:30–20:00 IST ✓
+# 12:00 AM  →  18:00 UTC   starts 18:00–18:30 UTC = 23:30–00:00 IST ✓
 #
 # IST hour is HARDCODED per job, so it is always correct regardless of
-# when the runner actually starts.
+# when the runner actually starts within the window.
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
   schedule:
-    - cron: "0 3  * * *"    # fires ~10:00 AM IST
-    - cron: "0 9  * * *"    # fires ~04:00 PM IST
-    - cron: "0 13 * * *"    # fires ~08:00 PM IST
-    - cron: "0 17 * * *"    # fires ~12:00 AM IST (midnight)
+    - cron: "0 4  * * *"    # fires ~10:00 AM IST
+    - cron: "0 10 * * *"    # fires ~04:00 PM IST
+    - cron: "0 14 * * *"    # fires ~08:00 PM IST
+    - cron: "0 18 * * *"    # fires ~12:00 AM IST (midnight)
 
   workflow_dispatch:
     inputs:
@@ -43,7 +43,7 @@ jobs:
     name: "Scrape — 10:00 AM IST"
     if: |
       (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '10') ||
-      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 3'))
+      (github.event_name == 'schedule' && github.event.schedule == '0 4 * * *')
     uses: ./.github/workflows/_scrape_job.yml
     with:
       ist_hour: "10"
@@ -55,7 +55,7 @@ jobs:
     name: "Scrape — 4:00 PM IST"
     if: |
       (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '16') ||
-      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 9'))
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * *')
     uses: ./.github/workflows/_scrape_job.yml
     with:
       ist_hour: "16"
@@ -67,7 +67,7 @@ jobs:
     name: "Scrape — 8:00 PM IST"
     if: |
       (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '20') ||
-      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 13'))
+      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *')
     uses: ./.github/workflows/_scrape_job.yml
     with:
       ist_hour: "20"
@@ -79,7 +79,7 @@ jobs:
     name: "Scrape — 12:00 AM IST (midnight)"
     if: |
       (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '0') ||
-      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 17'))
+      (github.event_name == 'schedule' && github.event.schedule == '0 18 * * *')
     uses: ./.github/workflows/_scrape_job.yml
     with:
       ist_hour: "0"

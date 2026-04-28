@@ -3,8 +3,9 @@ scraper_playwright.py — Method 1: Playwright-based Google Maps review scraper.
 Opens Brave (falls back to Chromium), 3 tabs at a time per batch.
 
 Deletion logic: after each branch is scraped, compare freshly-scraped IDs
-against what is stored in rev.json for that branch on the same date.
-Reviews no longer visible on Google -> saved to deleted.json.
+against what is stored in rev.json for that branch.
+Reviews no longer visible on Google → saved to deleted.json.
+Reviews that reappear in deleted.json → moved back to rev.json.
 """
 
 import sys
@@ -74,7 +75,7 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
             page.keyboard.press("End")
             page.wait_for_timeout(1500)
 
-        # Extract review cards - use multiple selector strategies
+        # Extract review cards — use multiple selector strategies
         selectors = [
             'div[data-review-id]',
             'div[jscontroller][class*="review"]',
@@ -90,18 +91,22 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 review_cards.extend(cards)
             except Exception:
                 pass
+
         # Dedupe by element handle
         seen = set()
         unique_cards = []
         for card in review_cards:
             try:
-                handle = card.evaluate("el => el.dataset.reviewId || el.dataset.jslog || el.outerHTML.substring(0, 200)")
+                handle = card.evaluate(
+                    "el => el.dataset.reviewId || el.dataset.jslog "
+                    "|| el.outerHTML.substring(0, 200)"
+                )
                 if handle not in seen:
                     seen.add(handle)
                     unique_cards.append(card)
             except Exception:
                 pass
-        # Use unique_cards
+
         for card in unique_cards:
             try:
                 rel_time = ""
@@ -121,24 +126,35 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                     continue
 
                 try:
-                    author_el = card.locator('div[class*="d4r55"], .WNxzHc button, a.al6Kxe').first
+                    author_el = card.locator(
+                        'div[class*="d4r55"], .WNxzHc button, a.al6Kxe'
+                    ).first
                     author = author_el.inner_text(timeout=2000).strip()
                 except Exception:
                     author = "Anonymous"
 
                 try:
                     stars_el = card.locator('span[aria-label*="star"]').first
-                    stars_label = stars_el.get_attribute("aria-label", timeout=2000) or ""
-                    stars = int(''.join(filter(str.isdigit, stars_label.split("star")[0][-2:])) or "0")
+                    stars_label = (
+                        stars_el.get_attribute("aria-label", timeout=2000) or ""
+                    )
+                    stars = int(
+                        ''.join(filter(str.isdigit,
+                                       stars_label.split("star")[0][-2:])) or "0"
+                    )
                 except Exception:
                     stars = 0
 
                 try:
-                    more_btn = card.locator('button[aria-label*="See more"], button.w8nwRe').first
+                    more_btn = card.locator(
+                        'button[aria-label*="See more"], button.w8nwRe'
+                    ).first
                     if more_btn.is_visible(timeout=1000):
                         more_btn.click()
                         page.wait_for_timeout(500)
-                    text_el = card.locator('span[class*="wiI7pd"], .MyEned span').first
+                    text_el = card.locator(
+                        'span[class*="wiI7pd"], .MyEned span'
+                    ).first
                     text = text_el.inner_text(timeout=2000).strip()
                 except Exception:
                     text = ""
@@ -177,7 +193,10 @@ def run(ist_hour: int | None = None) -> list:
         return []
 
     if ist_hour is None:
-        ist_hour = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).hour
+        ist_hour = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=5, minutes=30)
+        ).hour
 
     review_date = get_review_date(ist_hour)
     log(f"[playwright] Starting. IST hour={ist_hour}, review_date={review_date}")
@@ -186,9 +205,9 @@ def run(ist_hour: int | None = None) -> list:
     all_new_reviews = []
 
     # Load existing reviews ONCE before the scrape loop
-    existing = load_reviews()
+    existing   = load_reviews()
     total_deleted = 0
-    total_added = 0
+    total_added   = 0
 
     with sync_playwright() as pw:
         launch_kwargs = {
@@ -218,33 +237,37 @@ def run(ist_hour: int | None = None) -> list:
         pages = [context.new_page() for _ in range(3)]
 
         for i in range(0, len(BRANCHES), 3):
-            batch = BRANCHES[i:i+3]
+            batch = BRANCHES[i:i + 3]
             for tab_idx, (bid, name, pid) in enumerate(batch):
                 page = pages[tab_idx]
                 revs = scrape_branch_playwright(page, bid, name, pid, review_date)
 
-                # ── Per-branch dedup + deletion check ─────────────────────────
                 scraped_ids = {r["review_id"] for r in revs}
 
-                # Reactivate reviews that came back to Google
+                # 1. Reactivate reviews that re-appeared on Google
+                #    (must happen BEFORE deletion check)
                 n_react = reactivate_reviews(scraped_ids, existing)
                 if n_react:
-                    log(f"  [playwright] {name}: {n_react} reviews reactivated from deleted.json")
+                    log(f"  [playwright] {name}: {n_react} reviews reactivated "
+                        f"from deleted.json")
 
-                # 1. Add new reviews to existing (dedup by stable ID)
+                # 2. Add new reviews (dedup by stable ID)
                 existing, added = add_reviews(existing, revs)
                 total_added += added
                 all_new_reviews.extend(revs)
 
-                # 2. Deletion check: stored reviews for this branch+date
-                #    that are NOT in this run's scraped IDs = deleted
-                deleted = check_deletions_for_branch(bid, scraped_ids, existing, ist_hour)
+                # 3. Deletion check — pass ist_hour so the right date window
+                #    is used (10am → yesterday only; 4pm/8pm → today+yesterday;
+                #    midnight → yesterday only)
+                deleted = check_deletions_for_branch(
+                    bid, scraped_ids, existing, ist_hour
+                )
                 if deleted:
-                    n = move_to_deleted(deleted, existing)   # moves: out of rev, into deleted
+                    n = move_to_deleted(deleted, existing)
                     total_deleted += n
                     if n:
-                        log(f"  [playwright] {name}: {n} reviews moved to deleted.json")
-                # ──────────────────────────────────────────────────────────────
+                        log(f"  [playwright] {name}: {n} reviews moved to "
+                            f"deleted.json")
 
                 time.sleep(1)
 
@@ -252,9 +275,11 @@ def run(ist_hour: int | None = None) -> list:
 
     # Save final rev.json once after all branches
     save_reviews(existing)
-    log(f"[playwright] Done. {len(all_new_reviews)} scraped this run, "
+    log(
+        f"[playwright] Done. {len(all_new_reviews)} scraped this run, "
         f"{total_added} new added to rev.json, "
-        f"{total_deleted} moved to deleted.json")
+        f"{total_deleted} moved to deleted.json"
+    )
 
     return all_new_reviews
 
