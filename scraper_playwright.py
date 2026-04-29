@@ -38,7 +38,10 @@ def find_brave() -> str | None:
 
 
 def scrape_branch_playwright(page, branch_id: int, branch_name: str,
-                              place_id: str, review_date: str) -> list:
+                              place_id: str, review_date: str,
+                              existing_rev_snapshot: dict = None) -> list:
+    if existing_rev_snapshot is None:
+        existing_rev_snapshot = {}
     reviews = []
     agm = AGM_MAP.get(branch_name, "Unknown")
     url = maps_url(place_id)
@@ -71,16 +74,92 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
         except Exception:
             pass
 
-        # Scroll the reviews panel (not just keyboard End — that scrolls wrong element)
+        # Scroll until we see a "1 day ago" / "23 hours ago" review (or 60 scrolls max)
+        # This ensures ALL of yesterday's reviews are loaded before extraction.
+        TIME_SELECTORS = [
+            'span.XfOne', 'div[class*="DUxS3d"]', '.rsqaWe',
+            'span[aria-label*="ago"]', 'span[aria-label*="now"]',
+        ]
+        def _oldest_visible_time(pg) -> str:
+            """Return the oldest relative-time string visible on page, or ''."""
+            oldest = ""
+            for sel in TIME_SELECTORS:
+                try:
+                    els = pg.locator(sel).all()
+                    for el in els:
+                        try:
+                            t = el.inner_text(timeout=500).strip()
+                            if t:
+                                oldest = t  # last one = oldest (sorted newest-first)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            return oldest
+
+        def _has_day_old(pg) -> bool:
+            """True if any visible timestamp is '1 day ago' or >= 23 hours ago."""
+            for sel in TIME_SELECTORS:
+                try:
+                    els = pg.locator(sel).all()
+                    for el in els:
+                        try:
+                            t = el.inner_text(timeout=500).strip().lower()
+                            if "day" in t:
+                                return True
+                            import re as _re
+                            m = _re.match(r"(\d+)\s*h", t)
+                            if m and int(m.group(1)) >= 23:
+                                return True
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            return False
+
         try:
             panel = page.locator('div[aria-label*="Reviews"]').first
-            for _ in range(8):
+            prev_scroll = -1
+            prev_card_count = 0
+            stall_count = 0
+            day_old_extra = 0  # extra scrolls after first day-old found
+
+            for scroll_i in range(120):
                 panel.evaluate("el => el.scrollTop += 2000")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(800)
+
+                cur_scroll = panel.evaluate("el => el.scrollTop")
+                cur_card_count = 0
+                for sel in ['div[data-review-id]', 'div[class*="MyEned"]']:
+                    try:
+                        cur_card_count = max(cur_card_count, len(page.locator(sel).all()))
+                    except Exception:
+                        pass
+
+                # Both scroll pos AND card count unchanged = truly at end
+                if cur_scroll == prev_scroll and cur_card_count == prev_card_count:
+                    stall_count += 1
+                    if stall_count >= 3:
+                        log(f"  [playwright] {branch_name}: end of list at scroll {scroll_i+1}")
+                        break
+                else:
+                    stall_count = 0
+
+                prev_scroll = cur_scroll
+                prev_card_count = cur_card_count
+
+                if _has_day_old(page):
+                    day_old_extra += 1
+                    if day_old_extra >= 5:  # 5 extra scrolls after day-old seen
+                        log(f"  [playwright] {branch_name}: day-old captured at scroll {scroll_i+1}")
+                        break
+
         except Exception:
-            for _ in range(10):
+            for _ in range(60):
                 page.keyboard.press("End")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(800)
+                if _has_day_old(page):
+                    break
 
         # Extract review cards — use multiple selector strategies
         selectors = [
@@ -140,15 +219,23 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 except Exception:
                     author = "Anonymous"
 
+                stars = 0
                 try:
-                    stars_el = card.locator('span[aria-label*="star"]').first
-                    stars_label = (
-                        stars_el.get_attribute("aria-label", timeout=2000) or ""
-                    )
-                    stars = int(
-                        ''.join(filter(str.isdigit,
-                                       stars_label.split("star")[0][-2:])) or "0"
-                    )
+                    for _ssel in ['span[aria-label*="star"]','span[aria-label*="Star"]','div[aria-label*="star"]']:
+                        try:
+                            _lbl = card.locator(_ssel).first.get_attribute("aria-label", timeout=1500) or ""
+                            _d = "".join(filter(str.isdigit, _lbl.split("star")[0][-2:]))
+                            if _d:
+                                stars = min(int(_d), 5)
+                                break
+                        except Exception:
+                            continue
+                    if stars == 0:
+                        try:
+                            _filled = card.locator('img[src*="star_active"], span[class*="full"]').count()
+                            if _filled: stars = min(_filled, 5)
+                        except Exception:
+                            pass
                 except Exception:
                     stars = 0
 
@@ -166,9 +253,42 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 except Exception:
                     text = ""
 
+                # Guard: skip if stars=0 AND text empty (bad parse)
+                if stars == 0 and not text:
+                    continue
+
                 review_id = make_review_id(branch_id, author, text, stars)
+
+                # Dedupe by fuzzy fingerprint — catches same review with slightly
+                # different text/stars across runs (translate toggle, truncation, etc.)
+                # Normalize: lowercase, strip whitespace, collapse spaces
+                import re as _re
+                _author_clean = author.split("\n")[0].strip().lower()
+                _text_norm = _re.sub(r"\s+", " ", text.lower().strip())[:120]
+                _fp = (_author_clean, branch_id, _text_norm[:80])
+
+                # Check against already-scraped this session
+                if any(
+                    r["_fp"] == _fp
+                    for r in reviews
+                ):
+                    continue
+
+                # Check against existing rev.json — same fingerprint = same review
+                _existing_dup = next(
+                    (r for r in existing_rev_snapshot.values()
+                     if r.get("branch_id") == branch_id
+                     and r.get("author", "").split("\n")[0].strip().lower() == _author_clean
+                     and _re.sub(r"\s+", " ", r.get("text","").lower().strip())[:80] == _text_norm[:80]),
+                    None
+                )
+                if _existing_dup:
+                    # Already stored — reuse existing review_id to avoid dup
+                    review_id = _existing_dup["review_id"]
+
                 reviews.append({
                     "review_id":     review_id,
+                    "_fp":           _fp,
                     "branch_id":     branch_id,
                     "branch_name":   branch_name,
                     "place_id":      place_id,
@@ -188,6 +308,9 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
     except Exception as e:
         log(f"  [playwright] ERROR on {branch_name}: {e}")
 
+    # Strip internal _fp field before returning
+    for r in reviews:
+        r.pop("_fp", None)
     log(f"  [playwright] {branch_name}: {len(reviews)} recent reviews")
     return reviews
 
@@ -247,7 +370,7 @@ def run(ist_hour: int | None = None) -> list:
             batch = BRANCHES[i:i + 3]
             for tab_idx, (bid, name, pid) in enumerate(batch):
                 page = pages[tab_idx]
-                revs = scrape_branch_playwright(page, bid, name, pid, review_date)
+                revs = scrape_branch_playwright(page, bid, name, pid, review_date, existing_rev_snapshot=existing)
 
                 scraped_ids = {r["review_id"] for r in revs}
 
