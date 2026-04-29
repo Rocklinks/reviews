@@ -13,6 +13,7 @@ import time
 import datetime
 from pathlib import Path
 
+import re as _re
 from branches import BRANCHES, AGM_MAP
 from utils import (
     log, get_review_date, parse_relative_time, make_review_id,
@@ -80,23 +81,6 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
             'span.XfOne', 'div[class*="DUxS3d"]', '.rsqaWe',
             'span[aria-label*="ago"]', 'span[aria-label*="now"]',
         ]
-        def _oldest_visible_time(pg) -> str:
-            """Return the oldest relative-time string visible on page, or ''."""
-            oldest = ""
-            for sel in TIME_SELECTORS:
-                try:
-                    els = pg.locator(sel).all()
-                    for el in els:
-                        try:
-                            t = el.inner_text(timeout=500).strip()
-                            if t:
-                                oldest = t  # last one = oldest (sorted newest-first)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            return oldest
-
         def _has_day_old(pg) -> bool:
             """True if any visible timestamp is '1 day ago' or >= 23 hours ago."""
             for sel in TIME_SELECTORS:
@@ -107,7 +91,6 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                             t = el.inner_text(timeout=500).strip().lower()
                             if "day" in t:
                                 return True
-                            import re as _re
                             m = _re.match(r"(\d+)\s*h", t)
                             if m and int(m.group(1)) >= 23:
                                 return True
@@ -137,7 +120,8 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                         pass
 
                 # Both scroll pos AND card count unchanged = truly at end
-                if cur_scroll == prev_scroll and cur_card_count == prev_card_count:
+                # Only stall-check after we've confirmed scrolling is working (cur_scroll > 0)
+                if cur_scroll > 0 and cur_scroll == prev_scroll and cur_card_count == prev_card_count:
                     stall_count += 1
                     if stall_count >= 3:
                         log(f"  [playwright] {branch_name}: end of list at scroll {scroll_i+1}")
@@ -262,24 +246,27 @@ def scrape_branch_playwright(page, branch_id: int, branch_name: str,
                 # Dedupe by fuzzy fingerprint — catches same review with slightly
                 # different text/stars across runs (translate toggle, truncation, etc.)
                 # Normalize: lowercase, strip whitespace, collapse spaces
-                import re as _re
                 _author_clean = author.split("\n")[0].strip().lower()
-                _text_norm = _re.sub(r"\s+", " ", text.lower().strip())[:120]
-                _fp = (_author_clean, branch_id, _text_norm[:80])
+                # Normalize: lowercase, collapse whitespace, strip punctuation edges
+                def _norm(s):
+                    return _re.sub(r"[\s\.,!?…]+$", "", _re.sub(r"\s+", " ", s.lower().strip()))
+                _text_norm = _norm(text)
+                # _fp includes rel_time so same author writing same text on
+                # different days (different rel_time) is NOT collapsed.
+                _fp = (_author_clean, branch_id, _text_norm, rel_time)
 
-                # Check against already-scraped this session
-                if any(
-                    r["_fp"] == _fp
-                    for r in reviews
-                ):
+                # Same-session dedup: exact _fp match
+                if any(r["_fp"] == _fp for r in reviews):
                     continue
 
-                # Check against existing rev.json — same fingerprint = same review
+                # Cross-run dedup vs existing rev.json:
+                # Same author + same text + same branch = same review, regardless of date.
+                # Google keeps showing old reviews across days — must not create duplicates.
                 _existing_dup = next(
                     (r for r in existing_rev_snapshot.values()
                      if r.get("branch_id") == branch_id
                      and r.get("author", "").split("\n")[0].strip().lower() == _author_clean
-                     and _re.sub(r"\s+", " ", r.get("text","").lower().strip())[:80] == _text_norm[:80]),
+                     and _norm(r.get("text", "")) == _text_norm),
                     None
                 )
                 if _existing_dup:
@@ -336,6 +323,9 @@ def run(ist_hour: int | None = None) -> list:
 
     # Load existing reviews ONCE before the scrape loop
     existing   = load_reviews()
+    # Frozen snapshot for fingerprint dedup — must NOT include reviews added this run.
+    # Take a shallow copy now; never mutate it during the loop.
+    existing_snapshot = dict(existing)
     total_deleted = 0
     total_added   = 0
 
@@ -370,7 +360,7 @@ def run(ist_hour: int | None = None) -> list:
             batch = BRANCHES[i:i + 3]
             for tab_idx, (bid, name, pid) in enumerate(batch):
                 page = pages[tab_idx]
-                revs = scrape_branch_playwright(page, bid, name, pid, review_date, existing_rev_snapshot=existing)
+                revs = scrape_branch_playwright(page, bid, name, pid, review_date, existing_rev_snapshot=existing_snapshot)
 
                 scraped_ids = {r["review_id"] for r in revs}
 
