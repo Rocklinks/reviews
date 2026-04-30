@@ -2,233 +2,34 @@ name: SA Scraper
 
 on:
   schedule:
-    - cron: "30 4  * * *"   # ~10:00 AM IST
-    - cron: "30 10 * * *"   # ~04:00 PM IST
-    - cron: "30 14 * * *"   # ~08:00 PM IST
-    - cron: "30 18 * * *"   # ~12:00 AM IST
-
+    - cron: "30 18 * * *"   # 12:00 AM IST
   workflow_dispatch:
-    inputs:
-      ist_hour:
-        description: "IST hour (0=midnight, 10=10am, 16=4pm, 20=8pm)"
-        required: true
-        default: "10"
-        type: choice
-        options: ["0", "10", "16", "20"]
-      method:
-        description: "Force scraper method (leave blank for auto)"
-        required: false
-        default: ""
 
 jobs:
-  scrape-10am:
-    name: "Scrape — 10:00 AM IST"
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '10') ||
-      (github.event_name == 'schedule' && github.event.schedule == '30 4 * * *')
+  scrape:
+    name: "Scrape — Midnight IST"
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-      - run: pip install -r requirements.txt
-      - run: python -m playwright install chromium --with-deps
-        continue-on-error: true
-      - name: Install Brave browser
-        continue-on-error: true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y apt-transport-https curl
-          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
-            https://brave-browser-apt-release.s3.brave.com/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-          sudo apt-get update -qq
-          sudo apt-get install -y brave-browser
-      - run: sudo apt-get install -y xvfb xdotool
-        continue-on-error: true
-      - name: Start Xvfb
-        continue-on-error: true
-        run: |
-          Xvfb :99 -screen 0 1280x900x24 &
-          sleep 2
-          echo "DISPLAY=:99" >> $GITHUB_ENV
-      - run: sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        continue-on-error: true
-      - name: Run scraper
-        env:
-          DISPLAY: ":99"
-        run: |
-          CMD="python main.py --hour 10"
-          if [ -n "${{ github.event.inputs.method }}" ]; then CMD="$CMD --method ${{ github.event.inputs.method }}"; fi
-          $CMD
-      - name: Commit results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main || true
-          git add rev.json deleted.json || true
-          git diff --staged --quiet && echo "No changes." && exit 0
-          git commit -m "scrape: $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST') (hour=10) [skip ci]"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  scrape-4pm:
-    name: "Scrape — 4:00 PM IST"
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '16') ||
-      (github.event_name == 'schedule' && github.event.schedule == '30 10 * * *')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-      - run: pip install -r requirements.txt
-      - run: python -m playwright install chromium --with-deps
-        continue-on-error: true
-      - name: Install Brave browser
-        continue-on-error: true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y apt-transport-https curl
-          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
-            https://brave-browser-apt-release.s3.brave.com/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-          sudo apt-get update -qq
-          sudo apt-get install -y brave-browser
-      - run: sudo apt-get install -y xvfb xdotool
-        continue-on-error: true
-      - name: Start Xvfb
-        continue-on-error: true
-        run: |
-          Xvfb :99 -screen 0 1280x900x24 &
-          sleep 2
-          echo "DISPLAY=:99" >> $GITHUB_ENV
-      - run: sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        continue-on-error: true
-      - name: Run scraper
-        env:
-          DISPLAY: ":99"
-        run: |
-          CMD="python main.py --hour 16"
-          if [ -n "${{ github.event.inputs.method }}" ]; then CMD="$CMD --method ${{ github.event.inputs.method }}"; fi
-          $CMD
-      - name: Commit results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main || true
-          git add rev.json deleted.json || true
-          git diff --staged --quiet && echo "No changes." && exit 0
-          git commit -m "scrape: $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST') (hour=16) [skip ci]"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  scrape-8pm:
-    name: "Scrape — 8:00 PM IST"
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '20') ||
-      (github.event_name == 'schedule' && github.event.schedule == '30 14 * * *')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-      - run: pip install -r requirements.txt
-      - run: python -m playwright install chromium --with-deps
-        continue-on-error: true
-      - name: Install Brave browser
-        continue-on-error: true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y apt-transport-https curl
-          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
-            https://brave-browser-apt-release.s3.brave.com/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-          sudo apt-get update -qq
-          sudo apt-get install -y brave-browser
-      - run: sudo apt-get install -y xvfb xdotool
-        continue-on-error: true
-      - name: Start Xvfb
-        continue-on-error: true
-        run: |
-          Xvfb :99 -screen 0 1280x900x24 &
-          sleep 2
-          echo "DISPLAY=:99" >> $GITHUB_ENV
-      - run: sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        continue-on-error: true
-      - name: Run scraper
-        env:
-          DISPLAY: ":99"
-        run: |
-          CMD="python main.py --hour 20"
-          if [ -n "${{ github.event.inputs.method }}" ]; then CMD="$CMD --method ${{ github.event.inputs.method }}"; fi
-          $CMD
-      - name: Commit results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main || true
-          git add rev.json deleted.json || true
-          git diff --staged --quiet && echo "No changes." && exit 0
-          git commit -m "scrape: $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST') (hour=20) [skip ci]"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  scrape-midnight:
-    name: "Scrape — 12:00 AM IST"
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.ist_hour == '0') ||
-      (github.event_name == 'schedule' && github.event.schedule == '30 18 * * *')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
       - run: pip install -r requirements.txt
+
       - run: python -m playwright install chromium --with-deps
         continue-on-error: true
-      - name: Install Brave browser
+
+      - name: Install Brave
         continue-on-error: true
         run: |
           sudo apt-get update -qq
@@ -240,23 +41,23 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
           sudo apt-get update -qq
           sudo apt-get install -y brave-browser
-      - run: sudo apt-get install -y xvfb xdotool
-        continue-on-error: true
+
       - name: Start Xvfb
         continue-on-error: true
         run: |
+          sudo apt-get install -y xvfb
           Xvfb :99 -screen 0 1280x900x24 &
           sleep 2
           echo "DISPLAY=:99" >> $GITHUB_ENV
-      - run: sudo apt-get install -y chromium-browser chromium-chromedriver || true
+
+      - run: sudo apt-get install -y chromium-browser || true
         continue-on-error: true
+
       - name: Run scraper
         env:
           DISPLAY: ":99"
-        run: |
-          CMD="python main.py --hour 0"
-          if [ -n "${{ github.event.inputs.method }}" ]; then CMD="$CMD --method ${{ github.event.inputs.method }}"; fi
-          $CMD
+        run: python main.py --force
+
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
@@ -264,7 +65,7 @@ jobs:
           git pull --rebase origin main || true
           git add rev.json deleted.json || true
           git diff --staged --quiet && echo "No changes." && exit 0
-          git commit -m "scrape: $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST') (hour=0) [skip ci]"
+          git commit -m "scrape: $(TZ='Asia/Kolkata' date +'%Y-%m-%d %H:%M IST') [skip ci]"
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
