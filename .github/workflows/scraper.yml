@@ -56,7 +56,7 @@ jobs:
       - name: Run scraper
         env:
           DISPLAY: ":99"
-        run: python main.py --force
+        run: python scraper.py --force
 
       - name: Commit results
         run: |
