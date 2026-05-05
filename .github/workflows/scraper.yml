@@ -9,7 +9,7 @@ jobs:
   scrape:
     name: "Scrape — Midnight IST"
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 210
     permissions:
       contents: write
 
