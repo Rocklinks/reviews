@@ -279,7 +279,7 @@ def run():
     existing = load_reviews()
     snap = dict(existing)
     all_new, total_added, total_del, total_react = [], 0, 0, 0
-
+    run_start = time.time()
     with sync_playwright() as pw:
         kw = {"headless": True, "args": ["--no-sandbox",
               "--disable-blink-features=AutomationControlled",
