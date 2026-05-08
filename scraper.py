@@ -14,6 +14,8 @@ MAX_SCROLLS  = 2000
 STALL_LIMIT  = 5
 SCROLL_PX    = 2000
 SCROLL_DELAY = 700
+MAX_RUN)SECS = 170 * 60  # 170 min
+MAX_BRANCH_SECS = 4 * 60  #4 min
 
 BRAVE_PATHS = [
     "/usr/bin/brave-browser", "/usr/bin/brave",
@@ -233,7 +235,8 @@ def scrape_branch(page, bid, name, pid, rdate, snap):
 
     try: panel = page.locator('div[aria-label*="Reviews"]').first
     except Exception: panel = None
-
+    
+    branch_start = time.time()
     prev_pos = prev_n = stall = -1, 0, 0
     for i in range(MAX_SCROLLS):
         if panel:
